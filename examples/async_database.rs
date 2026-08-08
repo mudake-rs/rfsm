@@ -1,23 +1,7 @@
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
-use fsm::{Committed, Machine, Reaction};
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum State {
-    Pending,
-    Approved { reference: String },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum Event {
-    Approve { reference: String },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Transition {
-    Approved,
-}
+use fsm::{Applied, machine};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Effect {
@@ -35,43 +19,36 @@ struct Facts {
     actor: String,
 }
 
-struct Approvals;
+machine! {
+    name: Approvals,
+    context: Facts,
+    effect: Effect,
+    rejection: Rejection,
 
-impl Machine for Approvals {
-    type State = State;
-    type Event = Event;
-    type Context = Facts;
-    type Transition = Transition;
-    type Effect = Effect;
-    type Rejection = Rejection;
+    states: {
+        *Pending,
+        Approved { reference: String },
+    },
+    events: {
+        Approve { reference: String },
+    },
 
-    fn initial_target(&self) -> State {
-        State::Pending
+    transitions: {
+        Approved: Pending + Approve { reference } [async allowed(reference)]
+            / audit(reference) => Approved { reference },
+        Pending + Approve { .. } => reject NotAllowed,
+        Approved { .. } + Approve { .. } => reject AlreadyApproved,
+    }
+}
+
+impl ApprovalsContext for Facts {
+    async fn allowed(&self, _reference: &String) -> bool {
+        self.may_approve
     }
 
-    fn react(
-        &self,
-        _active: &State,
-        at: &State,
-        event: &Event,
-        facts: &Facts,
-    ) -> Reaction<State, Transition, Effect, Rejection> {
-        match (at, event) {
-            (State::Pending, Event::Approve { reference }) if facts.may_approve => {
-                Reaction::transition_with(
-                    Transition::Approved,
-                    State::Approved {
-                        reference: reference.clone(),
-                    },
-                    Effect::WriteAudit {
-                        actor: facts.actor.clone(),
-                    },
-                )
-            }
-            (State::Pending, Event::Approve { .. }) => Reaction::Reject(Rejection::NotAllowed),
-            (State::Approved { .. }, Event::Approve { .. }) => {
-                Reaction::Reject(Rejection::AlreadyApproved)
-            }
+    fn audit(&self, _reference: &String) -> Effect {
+        Effect::WriteAudit {
+            actor: self.actor.clone(),
         }
     }
 }
@@ -123,29 +100,26 @@ impl Transaction {
 }
 
 async fn approve(
-    machine: &Approvals,
     row: &mut Row,
     facts: &Facts,
     reference: String,
-) -> Result<Committed<State, Transition, Effect>, Box<dyn Error>> {
-    // The database row remains authoritative while selection stays pure.
+) -> Result<Applied<State, Transition, Effect>, Box<dyn Error>> {
     let event = Event::Approve { reference };
-    let plan = machine.plan_from(&row.state, &event, facts)?;
+    let plan = Approvals::evaluate(&row.state, &event, facts).await?;
 
     let mut transaction = Transaction::begin().await?;
-    transaction.store_state(plan.to()).await?;
-    if let Some(effect) = plan.effect() {
+    transaction.store_state(&plan.to).await?;
+    if let Some(effect) = &plan.effect {
         transaction.apply_effect(effect).await?;
     }
     transaction.commit(row).await?;
 
-    // The library cannot observe the transaction; this is the caller's claim.
-    Ok(plan.committed_by_caller())
+    Ok(plan.confirm())
 }
 
 fn main() {
-    // An application supplies its executor. Referencing the handler keeps this
-    // example compile-checked without selecting one for the library.
+    // The application supplies its executor; the library has no runtime
+    // dependency.
     let _ = approve;
 }
 
@@ -177,13 +151,8 @@ mod tests {
             actor: "operator-7".to_owned(),
         };
 
-        let committed = run_ready(approve(
-            &Approvals,
-            &mut row,
-            &facts,
-            "approval-42".to_owned(),
-        ))
-        .unwrap_or_else(|failure| panic!("unexpected approval failure: {failure}"));
+        let applied = run_ready(approve(&mut row, &facts, "approval-42".to_owned()))
+            .unwrap_or_else(|failure| panic!("unexpected approval failure: {failure}"));
 
         assert_eq!(
             row.state,
@@ -197,7 +166,7 @@ mod tests {
                 actor: "operator-7".to_owned(),
             }]
         );
-        assert_eq!(committed.to(), &row.state);
-        assert_eq!(committed.effect(), row.effects.first());
+        assert_eq!(applied.to, row.state);
+        assert_eq!(applied.effect.as_ref(), row.effects.first());
     }
 }

@@ -1,573 +1,571 @@
-use std::convert::Infallible;
-use std::future::{self, Future};
-use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
+mod flat {
+    use std::convert::Infallible;
 
-use fsm::{HierarchyError, Machine, MachineFailure, Reaction, RejectReason, StalePlan, StateKind};
+    use fsm::{ProcessError, machine};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DoorState {
-    Closed,
-    Open,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DoorEvent {
-    Open,
-    Lock,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DoorTransition {
-    Opened,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DoorRejection {
-    AlreadyOpen,
-}
-
-struct Door;
-
-impl Machine for Door {
-    type State = DoorState;
-    type Event = DoorEvent;
-    type Context = ();
-    type Transition = DoorTransition;
-    type Effect = Infallible;
-    type Rejection = DoorRejection;
-
-    fn initial_target(&self) -> DoorState {
-        DoorState::Closed
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Rejection {
+        AlreadyOpen,
+        AlreadyClosed,
+        InvalidEvent,
     }
 
-    fn react(
-        &self,
-        _active: &DoorState,
-        at: &DoorState,
-        event: &DoorEvent,
-        _context: &(),
-    ) -> Reaction<DoorState, DoorTransition, Infallible, DoorRejection> {
-        match (at, event) {
-            (DoorState::Closed, DoorEvent::Open) => {
-                Reaction::transition(DoorTransition::Opened, DoorState::Open)
+    machine! {
+        name: Door,
+        context: (),
+        effect: Infallible,
+        rejection: Rejection,
+        states: { *Closed, Open },
+        events: { Open, Close, Knock },
+        transitions: {
+            _ + _ => reject InvalidEvent,
+            Knocked: Closed + Knock => _,
+            Opened: Closed + Open => Open,
+            ClosedAgain: Open + Close => Closed,
+            Open + Open => reject AlreadyOpen,
+            Closed + Close => reject AlreadyClosed,
+        }
+    }
+
+    #[test]
+    fn accepted_transition_commits_and_reports_business_identity() {
+        let mut door = Door::new(());
+
+        let knocked = door
+            .process(Event::Knock)
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+        assert_eq!(knocked.transition, Transition::Knocked);
+        assert_eq!(knocked.from, State::Closed);
+        assert_eq!(knocked.to, State::Closed);
+        assert_eq!(door.state(), &State::Closed);
+
+        let applied = door
+            .process(Event::Open)
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+
+        assert_eq!(door.state(), &State::Open);
+        assert_eq!(door.state_id(), StateId::Open);
+        assert_eq!(applied.transition, Transition::Opened);
+        assert_eq!(applied.from, State::Closed);
+        assert_eq!(applied.to, State::Open);
+        assert_eq!(applied.effect, None);
+
+        let closed = door
+            .process(Event::Close)
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+        assert_eq!(closed.transition, Transition::ClosedAgain);
+        assert_eq!(door.state(), &State::Closed);
+    }
+
+    #[test]
+    fn explicit_rejection_preserves_current_state() {
+        let mut door = Door::from_state(State::Open, ());
+
+        let rejected = door.process(Event::Open);
+
+        assert_eq!(
+            rejected,
+            Err(ProcessError::Rejected(Rejection::AlreadyOpen))
+        );
+        assert_eq!(door.state(), &State::Open);
+        assert_eq!(
+            rejected.unwrap_err().to_string(),
+            "event was rejected: AlreadyOpen"
+        );
+    }
+}
+
+mod nested {
+    use fsm::{ProcessError, machine};
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct Token(u64);
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum Effect {
+        Record(Token),
+        Release(Token),
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Rejection {
+        Duplicate,
+        CancellationBlocked,
+        InvalidEvent,
+    }
+
+    struct Facts {
+        may_cancel: bool,
+    }
+
+    machine! {
+        name: Workflow,
+        context: Facts,
+        effect: Effect,
+        rejection: Rejection,
+        states: {
+            *Idle,
+            Flow {
+                *Waiting,
+                Ready { token: Token },
+                Review,
+            },
+            Failed,
+            Done,
+        },
+        events: {
+            Begin,
+            Accept { token: Token },
+            Cancel,
+            Finish,
+        },
+        transitions: {
+            ParentAccepted: Flow + Accept { .. } => Failed,
+            Flow + Cancel => reject CancellationBlocked,
+            Began: Idle + Begin => Flow,
+            Accepted: Waiting + Accept { token } / record(token) => Ready { token },
+            Ready { .. } + Accept { .. } => reject Duplicate,
+            CancelledReady: Ready { token } + Cancel [may_cancel]
+                / release(token) => Failed,
+            CancelledWaiting: Waiting + Cancel [may_cancel] => Failed,
+            Finished: Ready { .. } + Finish => Done,
+            _ + _ => reject InvalidEvent,
+        }
+    }
+
+    impl WorkflowContext for Facts {
+        fn may_cancel(&self) -> bool {
+            self.may_cancel
+        }
+
+        fn record(&self, token: &Token) -> Effect {
+            Effect::Record(*token)
+        }
+
+        fn release(&self, token: &Token) -> Effect {
+            Effect::Release(*token)
+        }
+    }
+
+    #[test]
+    fn compound_target_enters_initial_leaf_and_reports_membership() {
+        let mut workflow = Workflow::new(Facts { may_cancel: true });
+
+        let applied = workflow
+            .process(Event::Begin)
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+
+        assert_eq!(applied.to, State::Waiting);
+        assert_eq!(workflow.state(), &State::Waiting);
+        assert!(workflow.is_in(StateId::Flow));
+        assert!(workflow.is_in(StateId::Waiting));
+        assert!(!workflow.is_in(StateId::Idle));
+    }
+
+    #[test]
+    fn payload_binding_builds_target_and_effect() {
+        let token = Token(7);
+        let mut workflow = Workflow::from_state(State::Waiting, Facts { may_cancel: true });
+
+        let applied = workflow
+            .process(Event::Accept { token })
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+
+        assert_eq!(workflow.state(), &State::Ready { token });
+        assert_eq!(applied.transition, Transition::Accepted);
+        assert_eq!(applied.effect, Some(Effect::Record(token)));
+    }
+
+    #[test]
+    fn child_rejection_precedes_parent_transition() {
+        let token = Token(7);
+        let mut workflow = Workflow::from_state(State::Ready { token }, Facts { may_cancel: true });
+
+        let rejected = workflow.process(Event::Accept { token: Token(8) });
+
+        assert_eq!(rejected, Err(ProcessError::Rejected(Rejection::Duplicate)));
+        assert_eq!(workflow.state(), &State::Ready { token });
+    }
+
+    #[test]
+    fn parent_transition_handles_event_unmatched_by_child() {
+        let mut workflow = Workflow::from_state(State::Review, Facts { may_cancel: true });
+
+        let applied = workflow
+            .process(Event::Accept { token: Token(9) })
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+
+        assert_eq!(applied.transition, Transition::ParentAccepted);
+        assert_eq!(workflow.state(), &State::Failed);
+    }
+
+    #[test]
+    fn leaf_guarded_transition_precedes_parent_even_when_declared_later() {
+        let token = Token(7);
+        let mut workflow = Workflow::from_state(State::Ready { token }, Facts { may_cancel: true });
+
+        let applied = workflow
+            .process(Event::Cancel)
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+
+        assert_eq!(applied.transition, Transition::CancelledReady);
+        assert_eq!(applied.effect, Some(Effect::Release(token)));
+        assert_eq!(workflow.state(), &State::Failed);
+    }
+
+    #[test]
+    fn failed_child_guard_falls_through_to_parent_rejection() {
+        let token = Token(7);
+        let mut workflow =
+            Workflow::from_state(State::Ready { token }, Facts { may_cancel: false });
+
+        let rejected = workflow.process(Event::Cancel);
+
+        assert_eq!(
+            rejected,
+            Err(ProcessError::Rejected(Rejection::CancellationBlocked))
+        );
+        assert_eq!(workflow.state(), &State::Ready { token });
+    }
+
+    #[test]
+    fn leaf_transition_can_leave_compound_state() {
+        let token = Token(7);
+        let mut workflow = Workflow::from_state(State::Ready { token }, Facts { may_cancel: true });
+
+        let applied = workflow
+            .process(Event::Finish)
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+
+        assert_eq!(applied.transition, Transition::Finished);
+        assert_eq!(workflow.state(), &State::Done);
+        assert!(!workflow.is_in(StateId::Flow));
+    }
+}
+
+mod deep_hierarchy {
+    use std::convert::Infallible;
+
+    use fsm::{ProcessError, machine};
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Rejection {
+        ChildStopped,
+        Fallback,
+    }
+
+    struct Facts {
+        allow_inner: bool,
+    }
+
+    machine! {
+        name: Deep,
+        context: Facts,
+        effect: Infallible,
+        rejection: Rejection,
+        states: {
+            *Outside,
+            Outer {
+                *Inner {
+                    *A,
+                    B,
+                },
+                C,
+            },
+            Done,
+        },
+        events: { Enter, Go, Stop, Leave },
+        transitions: {
+            Entered: Outside + Enter => Outer,
+            InnerMoved: Inner + Go [allow_inner] => B,
+            OuterMoved: Outer + Go => C,
+            A + Stop => reject ChildStopped,
+            InnerStopped: Inner + Stop => C,
+            Left: A + Leave => Done,
+            _ + _ => reject Fallback,
+        }
+    }
+
+    impl DeepContext for Facts {
+        fn allow_inner(&self) -> bool {
+            self.allow_inner
+        }
+    }
+
+    #[test]
+    fn recursive_entry_and_three_level_precedence_are_explicit() {
+        let mut entered = Deep::new(Facts { allow_inner: false });
+        let applied = entered
+            .process(Event::Enter)
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+        assert_eq!(applied.to, State::A);
+        assert!(entered.is_in(StateId::Outer));
+        assert!(entered.is_in(StateId::Inner));
+        assert!(entered.is_in(StateId::A));
+
+        let moved = entered
+            .process(Event::Go)
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+        assert_eq!(moved.transition, Transition::OuterMoved);
+        assert_eq!(entered.state(), &State::C);
+
+        let mut stopped = Deep::from_state(State::A, Facts { allow_inner: true });
+        assert_eq!(
+            stopped.process(Event::Stop),
+            Err(ProcessError::Rejected(Rejection::ChildStopped))
+        );
+        assert_eq!(stopped.state(), &State::A);
+
+        let mut middle = Deep::from_state(State::B, Facts { allow_inner: true });
+        let applied = middle
+            .process(Event::Stop)
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+        assert_eq!(applied.transition, Transition::InnerStopped);
+        assert_eq!(middle.state(), &State::C);
+
+        let mut left = Deep::from_state(State::A, Facts { allow_inner: true });
+        let applied = left
+            .process(Event::Leave)
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+        assert_eq!(applied.transition, Transition::Left);
+        assert_eq!(left.state(), &State::Done);
+        assert!(!left.is_in(StateId::Outer));
+        assert!(!left.is_in(StateId::Inner));
+    }
+}
+
+mod async_machine {
+    use std::cell::Cell;
+    use std::future::{self, Future};
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+
+    use fsm::{ProcessError, machine};
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Rejection {
+        Denied,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum Effect {
+        Entered,
+    }
+
+    enum Decision {
+        Allow,
+        Deny,
+        PendingGuard,
+        PendingEffect,
+    }
+
+    struct Facts {
+        decision: Decision,
+        callback_steps: Cell<u32>,
+    }
+
+    impl Facts {
+        fn new(decision: Decision) -> Self {
+            Self {
+                decision,
+                callback_steps: Cell::new(0),
             }
-            (DoorState::Open, DoorEvent::Open) => Reaction::Reject(DoorRejection::AlreadyOpen),
-            (_, DoorEvent::Lock) => Reaction::Bubble,
-        }
-    }
-}
-
-#[test]
-fn accepted_transition_commits_and_reports_the_actual_transition() {
-    let mut state = DoorState::Closed;
-
-    let committed = Door
-        .dispatch(&mut state, &DoorEvent::Open, &())
-        .unwrap_or_else(|failure| panic!("unexpected dispatch failure: {failure}"));
-
-    assert_eq!(
-        (
-            committed.transition(),
-            committed.from(),
-            committed.to(),
-            committed.effect(),
-        ),
-        (
-            &DoorTransition::Opened,
-            &DoorState::Closed,
-            &DoorState::Open,
-            None,
-        ),
-    );
-    assert_eq!(state, DoorState::Open);
-}
-
-#[test]
-fn refused_and_unhandled_events_preserve_current_state() {
-    let mut open = DoorState::Open;
-    let refused = Door.dispatch(&mut open, &DoorEvent::Open, &());
-
-    assert_eq!(
-        refused,
-        Err(MachineFailure::Rejected(RejectReason::Refused(
-            DoorRejection::AlreadyOpen,
-        )))
-    );
-    assert_eq!(open, DoorState::Open);
-
-    let mut closed = DoorState::Closed;
-    let unhandled = Door.dispatch(&mut closed, &DoorEvent::Lock, &());
-
-    assert_eq!(
-        unhandled,
-        Err(MachineFailure::Rejected(RejectReason::Unhandled))
-    );
-    assert_eq!(closed, DoorState::Closed);
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OrderState {
-    Draft,
-    Checkout,
-    Payment,
-    Authorizing,
-    Authorized,
-    Cancelled,
-    Completed,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OrderEvent {
-    BeginPayment,
-    Authorize,
-    Cancel,
-    Complete,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OrderTransition {
-    BeganPayment,
-    Authorized,
-    AncestorAuthorizeFallback,
-    Cancelled,
-    Completed,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct OrderEffect(&'static str);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OrderRejection {
-    AlreadyAuthorized,
-}
-
-struct Orders {
-    initial: OrderState,
-}
-
-impl Machine for Orders {
-    type State = OrderState;
-    type Event = OrderEvent;
-    type Context = ();
-    type Transition = OrderTransition;
-    type Effect = OrderEffect;
-    type Rejection = OrderRejection;
-
-    fn initial_target(&self) -> OrderState {
-        self.initial
-    }
-
-    fn parent(&self, state: &OrderState) -> Option<OrderState> {
-        match state {
-            OrderState::Authorizing | OrderState::Authorized => Some(OrderState::Payment),
-            OrderState::Payment => Some(OrderState::Checkout),
-            _ => None,
         }
     }
 
-    fn state_kind(&self, state: &OrderState) -> StateKind<OrderState> {
-        match state {
-            OrderState::Checkout => StateKind::Compound(OrderState::Payment),
-            OrderState::Payment => StateKind::Compound(OrderState::Authorizing),
-            _ => StateKind::Leaf,
+    machine! {
+        name: AsyncGate,
+        context: Facts,
+        effect: Effect,
+        rejection: Rejection,
+        states: { *Closed, Open },
+        events: { Enter },
+        transitions: {
+            Entered: Closed + Enter [async allowed] / async effect => Open,
+            Closed + Enter => reject Denied,
+            Open + Enter => reject Denied,
         }
     }
 
-    fn react(
-        &self,
-        active: &OrderState,
-        at: &OrderState,
-        event: &OrderEvent,
-        _context: &(),
-    ) -> Reaction<OrderState, OrderTransition, OrderEffect, OrderRejection> {
-        match (at, event) {
-            (OrderState::Draft, OrderEvent::BeginPayment) => {
-                Reaction::transition(OrderTransition::BeganPayment, OrderState::Payment)
+    impl AsyncGateContext for Facts {
+        async fn allowed(&self) -> bool {
+            self.callback_steps.set(self.callback_steps.get() + 1);
+            match self.decision {
+                Decision::Allow => true,
+                Decision::Deny => false,
+                Decision::PendingGuard => future::pending().await,
+                Decision::PendingEffect => true,
             }
-            (OrderState::Authorizing, OrderEvent::Authorize) => Reaction::transition_with(
-                OrderTransition::Authorized,
-                OrderState::Authorized,
-                OrderEffect("record authorization"),
-            ),
-            (OrderState::Authorized, OrderEvent::Authorize) => {
-                Reaction::Reject(OrderRejection::AlreadyAuthorized)
+        }
+
+        async fn effect(&self) -> Effect {
+            self.callback_steps.set(self.callback_steps.get() + 1);
+            match self.decision {
+                Decision::PendingEffect => future::pending().await,
+                _ => Effect::Entered,
             }
-            (OrderState::Payment, OrderEvent::Authorize) => Reaction::transition(
-                OrderTransition::AncestorAuthorizeFallback,
-                OrderState::Cancelled,
-            ),
-            (OrderState::Payment, OrderEvent::Cancel) => match active {
-                OrderState::Authorized => Reaction::transition_with(
-                    OrderTransition::Cancelled,
-                    OrderState::Cancelled,
-                    OrderEffect("release authorization"),
-                ),
-                _ => Reaction::transition(OrderTransition::Cancelled, OrderState::Cancelled),
-            },
-            (OrderState::Authorized, OrderEvent::Complete) => {
-                Reaction::transition(OrderTransition::Completed, OrderState::Completed)
+        }
+    }
+
+    fn run_ready<F: Future>(future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        let mut context = Context::from_waker(Waker::noop());
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => output,
+            Poll::Pending => panic!("future unexpectedly suspended"),
+        }
+    }
+
+    #[test]
+    fn async_guard_selects_transition_or_fallback_rejection() {
+        let mut allowed = AsyncGate::new(Facts::new(Decision::Allow));
+        let applied = run_ready(allowed.process(Event::Enter))
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+        assert_eq!(applied.transition, Transition::Entered);
+        assert_eq!(applied.effect, Some(Effect::Entered));
+        assert_eq!(allowed.state(), &State::Open);
+
+        let mut denied = AsyncGate::new(Facts::new(Decision::Deny));
+        assert_eq!(
+            run_ready(denied.process(Event::Enter)),
+            Err(ProcessError::Rejected(Rejection::Denied))
+        );
+        assert_eq!(denied.state(), &State::Closed);
+    }
+
+    #[test]
+    fn cancellation_while_async_guard_is_pending_preserves_only_machine_state() {
+        let mut gate = AsyncGate::new(Facts::new(Decision::PendingGuard));
+        let mut processing = Box::pin(gate.process(Event::Enter));
+        let mut context = Context::from_waker(Waker::noop());
+
+        assert!(matches!(
+            Pin::as_mut(&mut processing).poll(&mut context),
+            Poll::Pending
+        ));
+        drop(processing);
+
+        assert_eq!(gate.state(), &State::Closed);
+        assert_eq!(gate.context().callback_steps.get(), 1);
+    }
+
+    #[test]
+    fn cancellation_while_async_effect_is_pending_preserves_only_machine_state() {
+        let mut gate = AsyncGate::new(Facts::new(Decision::PendingEffect));
+        let mut processing = Box::pin(gate.process(Event::Enter));
+        let mut context = Context::from_waker(Waker::noop());
+
+        assert!(matches!(
+            Pin::as_mut(&mut processing).poll(&mut context),
+            Poll::Pending
+        ));
+        drop(processing);
+
+        assert_eq!(gate.state(), &State::Closed);
+        assert_eq!(gate.context().callback_steps.get(), 2);
+    }
+}
+
+mod unhandled {
+    use std::convert::Infallible;
+
+    use fsm::{ProcessError, machine};
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Rejection {}
+
+    struct Facts;
+
+    machine! {
+        name: Guarded,
+        context: Facts,
+        effect: Infallible,
+        rejection: Rejection,
+        states: { *Waiting },
+        events: { Try },
+        transitions: {
+            Accepted: Waiting + Try [allowed] => Waiting,
+        }
+    }
+
+    impl GuardedContext for Facts {
+        fn allowed(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn failed_guard_without_fallback_is_unhandled_and_preserves_state() {
+        let mut machine = Guarded::new(Facts);
+
+        let unhandled = machine.process(Event::Try);
+
+        assert_eq!(
+            unhandled,
+            Err(ProcessError::Unhandled {
+                state: StateId::Waiting,
+                event: Event::Try,
+            })
+        );
+        assert_eq!(machine.state(), &State::Waiting);
+    }
+}
+
+mod durable_state {
+    use fsm::machine;
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum Effect {
+        Audit(String),
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Rejection {
+        Invalid,
+    }
+
+    struct Facts;
+
+    machine! {
+        name: Approval,
+        context: Facts,
+        effect: Effect,
+        rejection: Rejection,
+        states: { *Pending, Approved { reference: String } },
+        events: { Approve { reference: String } },
+        transitions: {
+            Approved: Pending + Approve { reference } / audit(reference)
+                => Approved { reference },
+            Approved { .. } + Approve { .. } => reject Invalid,
+        }
+    }
+
+    impl ApprovalContext for Facts {
+        fn audit(&self, reference: &String) -> Effect {
+            Effect::Audit(reference.clone())
+        }
+    }
+
+    #[test]
+    fn evaluation_leaves_durable_state_unchanged_until_caller_confirmation() {
+        let row_state = State::Pending;
+        let event = Event::Approve {
+            reference: "approval-42".to_owned(),
+        };
+
+        let plan = Approval::evaluate(&row_state, &event, &Facts)
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+
+        assert_eq!(row_state, State::Pending);
+        assert_eq!(
+            plan.to,
+            State::Approved {
+                reference: "approval-42".to_owned()
             }
-            _ => Reaction::Bubble,
-        }
+        );
+        assert_eq!(plan.effect, Some(Effect::Audit("approval-42".to_owned())));
+
+        let applied = plan.confirm();
+        assert_eq!(applied.transition, Transition::Approved);
     }
-}
-
-#[test]
-fn compound_initial_and_transition_targets_resolve_to_their_initial_leaf() {
-    let payment_session = Orders {
-        initial: OrderState::Payment,
-    };
-    assert_eq!(payment_session.initial(), Ok(OrderState::Authorizing));
-    let checkout_session = Orders {
-        initial: OrderState::Checkout,
-    };
-    assert_eq!(checkout_session.initial(), Ok(OrderState::Authorizing));
-
-    let orders = Orders {
-        initial: OrderState::Draft,
-    };
-    let mut state = OrderState::Draft;
-    let committed = orders
-        .dispatch(&mut state, &OrderEvent::BeginPayment, &())
-        .unwrap_or_else(|failure| panic!("unexpected dispatch failure: {failure}"));
-
-    assert_eq!(
-        (
-            committed.transition(),
-            committed.from(),
-            committed.to(),
-            committed.effect(),
-        ),
-        (
-            &OrderTransition::BeganPayment,
-            &OrderState::Draft,
-            &OrderState::Authorizing,
-            None,
-        ),
-    );
-    assert_eq!(state, OrderState::Authorizing);
-}
-
-#[test]
-fn child_transition_and_rejection_take_precedence_over_parent_fallback() {
-    let orders = Orders {
-        initial: OrderState::Draft,
-    };
-    let mut state = OrderState::Authorizing;
-
-    let authorized = orders
-        .dispatch(&mut state, &OrderEvent::Authorize, &())
-        .unwrap_or_else(|failure| panic!("unexpected dispatch failure: {failure}"));
-    assert_eq!(
-        (
-            authorized.transition(),
-            authorized.from(),
-            authorized.to(),
-            authorized.effect(),
-        ),
-        (
-            &OrderTransition::Authorized,
-            &OrderState::Authorizing,
-            &OrderState::Authorized,
-            Some(&OrderEffect("record authorization")),
-        ),
-    );
-    assert_eq!(orders.is_in(&state, &OrderState::Payment), Ok(true));
-    assert_eq!(orders.is_in(&state, &state), Ok(true));
-
-    let refused = orders.dispatch(&mut state, &OrderEvent::Authorize, &());
-    assert_eq!(
-        refused,
-        Err(MachineFailure::Rejected(RejectReason::Refused(
-            OrderRejection::AlreadyAuthorized,
-        )))
-    );
-    assert_eq!(state, OrderState::Authorized);
-}
-
-#[test]
-fn parent_rule_handles_child_event_without_losing_the_active_leaf() {
-    let orders = Orders {
-        initial: OrderState::Draft,
-    };
-    let mut state = OrderState::Authorized;
-
-    let committed = orders
-        .dispatch(&mut state, &OrderEvent::Cancel, &())
-        .unwrap_or_else(|failure| panic!("unexpected dispatch failure: {failure}"));
-
-    let (transition, from, to, effect) = committed.into_parts();
-    assert_eq!(
-        (transition, from, to, effect),
-        (
-            OrderTransition::Cancelled,
-            OrderState::Authorized,
-            OrderState::Cancelled,
-            Some(OrderEffect("release authorization")),
-        ),
-    );
-    assert_eq!(state, OrderState::Cancelled);
-}
-
-#[test]
-fn child_rule_can_leave_its_compound_parent() {
-    let orders = Orders {
-        initial: OrderState::Draft,
-    };
-    let mut state = OrderState::Authorized;
-
-    let committed = orders
-        .dispatch(&mut state, &OrderEvent::Complete, &())
-        .unwrap_or_else(|failure| panic!("unexpected dispatch failure: {failure}"));
-
-    assert_eq!(
-        (
-            committed.transition(),
-            committed.from(),
-            committed.to(),
-            committed.effect(),
-        ),
-        (
-            &OrderTransition::Completed,
-            &OrderState::Authorized,
-            &OrderState::Completed,
-            None,
-        ),
-    );
-    assert_eq!(orders.is_in(&state, &OrderState::Payment), Ok(false));
-}
-
-#[test]
-fn compound_state_cannot_be_used_as_current_state() {
-    let orders = Orders {
-        initial: OrderState::Draft,
-    };
-    let mut state = OrderState::Payment;
-
-    let failure = orders.dispatch(&mut state, &OrderEvent::Cancel, &());
-
-    assert_eq!(
-        failure,
-        Err(MachineFailure::InvalidHierarchy(
-            HierarchyError::ActiveStateIsCompound {
-                state: OrderState::Payment,
-            },
-        ))
-    );
-    assert_eq!(state, OrderState::Payment);
-    assert_eq!(
-        orders.is_in(&state, &OrderState::Payment),
-        Err(HierarchyError::ActiveStateIsCompound {
-            state: OrderState::Payment,
-        })
-    );
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Node {
-    Leaf,
-    A,
-    B,
-}
-
-#[derive(Clone, Copy)]
-enum Malformation {
-    ParentCycle,
-    InitialCycle,
-    InitialOutsideParent,
-    ParentIsLeaf,
-}
-
-struct BrokenHierarchy(Malformation);
-
-impl Machine for BrokenHierarchy {
-    type State = Node;
-    type Event = ();
-    type Context = ();
-    type Transition = ();
-    type Effect = Infallible;
-    type Rejection = Infallible;
-
-    fn initial_target(&self) -> Node {
-        match self.0 {
-            Malformation::ParentCycle => Node::Leaf,
-            _ => Node::A,
-        }
-    }
-
-    fn parent(&self, state: &Node) -> Option<Node> {
-        match (self.0, state) {
-            (Malformation::ParentCycle, Node::Leaf) => Some(Node::A),
-            (Malformation::ParentCycle, Node::A) => Some(Node::B),
-            (Malformation::ParentCycle, Node::B) => Some(Node::A),
-            (Malformation::InitialCycle, Node::A) => Some(Node::B),
-            (Malformation::InitialCycle, Node::B) => Some(Node::A),
-            (Malformation::InitialOutsideParent, Node::Leaf) => Some(Node::A),
-            (Malformation::ParentIsLeaf, Node::A) => Some(Node::B),
-            _ => None,
-        }
-    }
-
-    fn state_kind(&self, state: &Node) -> StateKind<Node> {
-        match (self.0, state) {
-            (Malformation::ParentCycle, Node::A) => StateKind::Compound(Node::Leaf),
-            (Malformation::ParentCycle, Node::B) => StateKind::Compound(Node::A),
-            (Malformation::InitialCycle, Node::A) => StateKind::Compound(Node::B),
-            (Malformation::InitialCycle, Node::B) => StateKind::Compound(Node::A),
-            (Malformation::InitialOutsideParent, Node::A) => StateKind::Compound(Node::B),
-            _ => StateKind::Leaf,
-        }
-    }
-
-    fn react(
-        &self,
-        _active: &Node,
-        _at: &Node,
-        _event: &(),
-        _context: &(),
-    ) -> Reaction<Node, (), Infallible, Infallible> {
-        match self.0 {
-            Malformation::ParentIsLeaf => Reaction::transition((), Node::A),
-            _ => Reaction::transition((), Node::Leaf),
-        }
-    }
-}
-
-#[test]
-fn malformed_hierarchies_fail_before_state_mutation() {
-    let parent_cycle = BrokenHierarchy(Malformation::ParentCycle);
-    let mut state = Node::Leaf;
-    let failure = parent_cycle.dispatch(&mut state, &(), &());
-    assert_eq!(
-        failure,
-        Err(MachineFailure::InvalidHierarchy(
-            HierarchyError::ParentCycle { state: Node::A },
-        ))
-    );
-    assert_eq!(state, Node::Leaf);
-    assert_eq!(
-        parent_cycle.is_in(&state, &Node::B),
-        Err(HierarchyError::ParentCycle { state: Node::A })
-    );
-
-    let initial_cycle = BrokenHierarchy(Malformation::InitialCycle);
-    assert_eq!(
-        initial_cycle.initial(),
-        Err(HierarchyError::InitialChildCycle { state: Node::A })
-    );
-
-    let outside = BrokenHierarchy(Malformation::InitialOutsideParent);
-    assert_eq!(
-        outside.initial(),
-        Err(HierarchyError::InitialChildOutsideParent {
-            parent: Node::A,
-            child: Node::B,
-        })
-    );
-    let mut state = Node::Leaf;
-    assert_eq!(
-        outside.dispatch(&mut state, &(), &()),
-        Err(MachineFailure::InvalidHierarchy(
-            HierarchyError::InitialChildOutsideParent {
-                parent: Node::A,
-                child: Node::B,
-            },
-        ))
-    );
-    assert_eq!(state, Node::Leaf);
-
-    let parent_is_leaf = BrokenHierarchy(Malformation::ParentIsLeaf);
-    let mut state = Node::A;
-    assert_eq!(
-        parent_is_leaf.dispatch(&mut state, &(), &()),
-        Err(MachineFailure::InvalidHierarchy(
-            HierarchyError::ParentIsLeaf {
-                parent: Node::B,
-                child: Node::A,
-            },
-        ))
-    );
-    assert_eq!(state, Node::A);
-
-    let mut valid_source = Node::Leaf;
-    assert_eq!(
-        parent_is_leaf.dispatch(&mut valid_source, &(), &()),
-        Err(MachineFailure::InvalidHierarchy(
-            HierarchyError::ParentIsLeaf {
-                parent: Node::B,
-                child: Node::A,
-            },
-        ))
-    );
-    assert_eq!(valid_source, Node::Leaf);
-}
-
-#[test]
-fn stale_plan_does_not_overwrite_current_state() {
-    let plan = Door
-        .plan_from(&DoorState::Closed, &DoorEvent::Open, &())
-        .unwrap_or_else(|failure| panic!("unexpected selection failure: {failure}"));
-    let mut current = DoorState::Open;
-
-    let stale = plan.commit(&mut current);
-
-    assert_eq!(
-        stale,
-        Err(StalePlan {
-            expected: DoorState::Closed,
-            actual: DoorState::Open,
-        })
-    );
-    assert_eq!(current, DoorState::Open);
-}
-
-#[test]
-fn current_plan_commit_updates_state_and_returns_a_receipt() {
-    let plan = Door
-        .plan_from(&DoorState::Closed, &DoorEvent::Open, &())
-        .unwrap_or_else(|failure| panic!("unexpected selection failure: {failure}"));
-    let mut current = DoorState::Closed;
-
-    let committed = plan
-        .commit(&mut current)
-        .unwrap_or_else(|failure| panic!("unexpected commit failure: {failure}"));
-
-    assert_eq!(
-        (
-            committed.transition(),
-            committed.from(),
-            committed.to(),
-            committed.effect(),
-        ),
-        (
-            &DoorTransition::Opened,
-            &DoorState::Closed,
-            &DoorState::Open,
-            None,
-        ),
-    );
-    assert_eq!(current, DoorState::Open);
-}
-
-#[test]
-fn cancellation_before_commit_leaves_caller_state_unchanged() {
-    let mut current = DoorState::Closed;
-    let plan = Door
-        .plan_from(&current, &DoorEvent::Open, &())
-        .unwrap_or_else(|failure| panic!("unexpected selection failure: {failure}"));
-
-    let mut work = Box::pin(async {
-        future::pending::<()>().await;
-        plan.commit(&mut current)
-    });
-    let mut context = Context::from_waker(Waker::noop());
-    assert!(matches!(
-        Pin::as_mut(&mut work).poll(&mut context),
-        Poll::Pending,
-    ));
-
-    drop(work);
-
-    assert_eq!(current, DoorState::Closed);
 }

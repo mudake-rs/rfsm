@@ -1,35 +1,9 @@
 use std::error::Error;
 
-use fsm::{Machine, MachineFailure, Reaction, RejectReason, StateKind};
+use fsm::{ProcessError, machine};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ChargeId(u64);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum State {
-    Draft,
-    Payment,
-    Authorizing,
-    Authorized { charge_id: ChargeId },
-    Cancelled,
-    Completed,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Event {
-    BeginPayment,
-    Authorize { charge_id: ChargeId },
-    Cancel,
-    Complete,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Transition {
-    BeganPayment,
-    AuthorizedPayment,
-    CancelledPayment,
-    CompletedOrder,
-}
+pub struct ChargeId(u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Effect {
@@ -41,131 +15,94 @@ enum Effect {
 enum Rejection {
     AlreadyAuthorized,
     CancellationBlocked,
+    InvalidEvent,
 }
 
 struct Facts {
     may_cancel: bool,
 }
 
-struct Orders {
-    initial: State,
+machine! {
+    name: Orders,
+    context: Facts,
+    effect: Effect,
+    rejection: Rejection,
+
+    states: {
+        *Draft,
+        Payment {
+            *Authorizing,
+            Authorized { charge_id: ChargeId },
+        },
+        Cancelled,
+        Completed,
+    },
+    events: {
+        BeginPayment,
+        Authorize { charge_id: ChargeId },
+        Cancel,
+        Complete,
+    },
+
+    transitions: {
+        BeganPayment: Draft + BeginPayment => Payment,
+        AuthorizedPayment: Authorizing + Authorize { charge_id }
+            / record_charge(charge_id) => Authorized { charge_id },
+        Authorized { .. } + Authorize { .. } => reject AlreadyAuthorized,
+        CancelledPayment: Authorized { charge_id } + Cancel [may_cancel]
+            / refund_charge(charge_id) => Cancelled,
+        CancelledUnchargedPayment: Authorizing + Cancel [may_cancel] => Cancelled,
+        Payment + Cancel => reject CancellationBlocked,
+        CompletedOrder: Authorized { .. } + Complete => Completed,
+        _ + _ => reject InvalidEvent,
+    }
 }
 
-impl Machine for Orders {
-    type State = State;
-    type Event = Event;
-    type Context = Facts;
-    type Transition = Transition;
-    type Effect = Effect;
-    type Rejection = Rejection;
-
-    fn initial_target(&self) -> State {
-        self.initial
+impl OrdersContext for Facts {
+    fn may_cancel(&self) -> bool {
+        self.may_cancel
     }
 
-    fn parent(&self, state: &State) -> Option<State> {
-        match state {
-            State::Authorizing | State::Authorized { .. } => Some(State::Payment),
-            _ => None,
-        }
+    fn record_charge(&self, charge_id: &ChargeId) -> Effect {
+        Effect::RecordCharge(*charge_id)
     }
 
-    fn state_kind(&self, state: &State) -> StateKind<State> {
-        match state {
-            State::Payment => StateKind::Compound(State::Authorizing),
-            _ => StateKind::Leaf,
-        }
-    }
-
-    fn react(
-        &self,
-        active: &State,
-        at: &State,
-        event: &Event,
-        facts: &Facts,
-    ) -> Reaction<State, Transition, Effect, Rejection> {
-        match (at, event) {
-            (State::Draft, Event::BeginPayment) => {
-                Reaction::transition(Transition::BeganPayment, State::Payment)
-            }
-            (State::Authorizing, Event::Authorize { charge_id }) => Reaction::transition_with(
-                Transition::AuthorizedPayment,
-                State::Authorized {
-                    charge_id: *charge_id,
-                },
-                Effect::RecordCharge(*charge_id),
-            ),
-            (State::Authorized { .. }, Event::Authorize { .. }) => {
-                Reaction::Reject(Rejection::AlreadyAuthorized)
-            }
-            (State::Payment, Event::Cancel) if facts.may_cancel => match active {
-                State::Authorized { charge_id } => Reaction::transition_with(
-                    Transition::CancelledPayment,
-                    State::Cancelled,
-                    Effect::RefundCharge(*charge_id),
-                ),
-                _ => Reaction::transition(Transition::CancelledPayment, State::Cancelled),
-            },
-            (State::Payment, Event::Cancel) => Reaction::Reject(Rejection::CancellationBlocked),
-            (State::Authorized { .. }, Event::Complete) => {
-                Reaction::transition(Transition::CompletedOrder, State::Completed)
-            }
-            _ => Reaction::Bubble,
-        }
+    fn refund_charge(&self, charge_id: &ChargeId) -> Effect {
+        Effect::RefundCharge(*charge_id)
     }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let orders = Orders {
-        initial: State::Draft,
-    };
-    let facts = Facts { may_cancel: true };
     let charge_id = ChargeId(7);
+    let mut orders = Orders::new(Facts { may_cancel: true });
 
-    let payment_session = Orders {
-        initial: State::Payment,
-    };
-    assert_eq!(payment_session.initial()?, State::Authorizing);
+    let began = orders.process(Event::BeginPayment)?;
+    assert_eq!(began.to, State::Authorizing);
+    assert_eq!(orders.state(), &State::Authorizing);
+    assert!(orders.is_in(StateId::Payment));
 
-    let mut state = orders.initial()?;
-    orders.dispatch(&mut state, &Event::BeginPayment, &facts)?;
-    assert_eq!(state, State::Authorizing);
-    assert!(orders.is_in(&state, &State::Payment)?);
+    let authorized = orders.process(Event::Authorize { charge_id })?;
+    assert_eq!(authorized.effect, Some(Effect::RecordCharge(charge_id)));
+    assert_eq!(orders.state(), &State::Authorized { charge_id });
 
-    let authorized = orders.dispatch(&mut state, &Event::Authorize { charge_id }, &facts)?;
-    assert_eq!(authorized.effect(), Some(&Effect::RecordCharge(charge_id)));
-
-    let cancelled = orders.dispatch(&mut state, &Event::Cancel, &facts)?;
+    let duplicate = orders.process(Event::Authorize { charge_id });
     assert_eq!(
-        (
-            cancelled.transition(),
-            cancelled.from(),
-            cancelled.to(),
-            cancelled.effect(),
-        ),
-        (
-            &Transition::CancelledPayment,
-            &State::Authorized { charge_id },
-            &State::Cancelled,
-            Some(&Effect::RefundCharge(charge_id)),
-        ),
+        duplicate,
+        Err(ProcessError::Rejected(Rejection::AlreadyAuthorized))
     );
+    assert_eq!(orders.state(), &State::Authorized { charge_id });
 
-    let blocked = Facts { may_cancel: false };
-    let mut state = State::Authorizing;
-    let rejected = orders.dispatch(&mut state, &Event::Cancel, &blocked);
-    assert!(matches!(
-        rejected,
-        Err(MachineFailure::Rejected(RejectReason::Refused(
-            Rejection::CancellationBlocked,
-        )))
-    ));
-    assert_eq!(state, State::Authorizing);
+    let cancelled = orders.process(Event::Cancel)?;
+    assert_eq!(cancelled.effect, Some(Effect::RefundCharge(charge_id)));
+    assert_eq!(orders.state(), &State::Cancelled);
 
-    let mut completed_state = State::Authorized { charge_id };
-    orders.dispatch(&mut completed_state, &Event::Complete, &facts)?;
-    assert_eq!(completed_state, State::Completed);
+    let mut blocked = Orders::from_state(State::Authorizing, Facts { may_cancel: false });
+    assert_eq!(
+        blocked.process(Event::Cancel),
+        Err(ProcessError::Rejected(Rejection::CancellationBlocked))
+    );
+    assert_eq!(blocked.state(), &State::Authorizing);
 
-    println!("cancelled={cancelled:?}, completed_state={completed_state:?}");
+    println!("cancelled={cancelled:?}");
     Ok(())
 }

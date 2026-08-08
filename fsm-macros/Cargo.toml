@@ -1,24 +1,22 @@
-[workspace]
-members = ["fsm-macros"]
-resolver = "3"
-
 [package]
-name = "fsm"
+name = "fsm-macros"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
-description = "Table-first finite state machines for Rust"
+description = "Proc macros for the fsm crate"
 repository = "https://github.com/mudake-rs/fsm"
 include = [
     "/src/**/*.rs",
-    "/examples/**/*.rs",
-    "/tests/**/*.rs",
     "/Cargo.toml",
-    "/README.md",
     "/LICENSE-APACHE",
     "/LICENSE-MIT",
 ]
 
+[lib]
+proc-macro = true
+
 [dependencies]
-fsm-macros = { version = "0.1.0", path = "fsm-macros" }
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

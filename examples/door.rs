@@ -1,25 +1,7 @@
 use std::convert::Infallible;
 use std::error::Error;
 
-use fsm::{Machine, MachineFailure, Reaction, RejectReason};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum State {
-    Closed,
-    Open,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Event {
-    Open,
-    Close,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Transition {
-    Opened,
-    Closed,
-}
+use fsm::{ProcessError, machine};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Rejection {
@@ -27,62 +9,43 @@ enum Rejection {
     AlreadyClosed,
 }
 
-struct Door;
+machine! {
+    name: Door,
+    context: (),
+    effect: Infallible,
+    rejection: Rejection,
 
-impl Machine for Door {
-    type State = State;
-    type Event = Event;
-    type Context = ();
-    type Transition = Transition;
-    type Effect = Infallible;
-    type Rejection = Rejection;
+    states: { *Closed, Open },
+    events: { Open, Close },
 
-    fn initial_target(&self) -> State {
-        State::Closed
-    }
-
-    fn react(
-        &self,
-        _active: &State,
-        at: &State,
-        event: &Event,
-        _context: &(),
-    ) -> Reaction<State, Transition, Infallible, Rejection> {
-        match (at, event) {
-            (State::Closed, Event::Open) => Reaction::transition(Transition::Opened, State::Open),
-            (State::Open, Event::Close) => Reaction::transition(Transition::Closed, State::Closed),
-            (State::Open, Event::Open) => Reaction::Reject(Rejection::AlreadyOpen),
-            (State::Closed, Event::Close) => Reaction::Reject(Rejection::AlreadyClosed),
-        }
+    transitions: {
+        Opened: Closed + Open => Open,
+        ClosedAgain: Open + Close => Closed,
+        Open + Open => reject AlreadyOpen,
+        Closed + Close => reject AlreadyClosed,
     }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut state = Door.initial()?;
+    let mut door = Door::new(());
 
-    let committed = Door.dispatch(&mut state, &Event::Open, &())?;
+    let opened = door.process(Event::Open)?;
+    assert_eq!(door.state(), &State::Open);
+    assert_eq!(opened.transition, Transition::Opened);
+    assert_eq!(opened.from, State::Closed);
+    assert_eq!(opened.to, State::Open);
+    assert_eq!(opened.effect, None);
+
+    let rejected = door.process(Event::Open);
     assert_eq!(
-        (
-            committed.transition(),
-            committed.from(),
-            committed.to(),
-            committed.effect(),
-        ),
-        (&Transition::Opened, &State::Closed, &State::Open, None),
-    );
-
-    let rejected = Door.dispatch(&mut state, &Event::Open, &());
-    assert!(matches!(
         rejected,
-        Err(MachineFailure::Rejected(RejectReason::Refused(
-            Rejection::AlreadyOpen,
-        )))
-    ));
-    assert_eq!(state, State::Open);
+        Err(ProcessError::Rejected(Rejection::AlreadyOpen))
+    );
+    assert_eq!(door.state(), &State::Open);
 
-    Door.dispatch(&mut state, &Event::Close, &())?;
-    assert_eq!(state, State::Closed);
+    let _closed = door.process(Event::Close)?;
+    assert_eq!(door.state(), &State::Closed);
 
-    println!("state={state:?}, opened={committed:?}");
+    println!("state={:?}, opened={opened:?}", door.state());
     Ok(())
 }
