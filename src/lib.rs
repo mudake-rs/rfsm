@@ -4,7 +4,7 @@
 
 use core::fmt::{self, Debug, Display, Formatter};
 
-pub use fsm_macros::machine;
+pub use rfsm_macros::machine;
 
 /// A selected transition that has not been confirmed by its state owner.
 ///

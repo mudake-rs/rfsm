@@ -1,15 +1,15 @@
 [workspace]
-members = ["fsm-macros"]
+members = ["rfsm-macros"]
 resolver = "3"
 
 [package]
-name = "fsm"
+name = "rfsm"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 description = "Table-first finite state machines for Rust"
-repository = "https://github.com/mudake-rs/fsm"
+repository = "https://github.com/mudake-rs/rfsm"
 include = [
     "/src/**/*.rs",
     "/examples/**/*.rs",
@@ -21,4 +21,4 @@ include = [
 ]
 
 [dependencies]
-fsm-macros = { version = "0.1.0", path = "fsm-macros" }
+rfsm-macros = { version = "0.1.0", path = "rfsm-macros" }

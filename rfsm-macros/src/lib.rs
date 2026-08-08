@@ -1,4 +1,4 @@
-//! Proc-macro implementation for `fsm`.
+//! Proc-macro implementation for `rfsm`.
 
 mod expand;
 mod model;
@@ -42,7 +42,7 @@ use proc_macro::TokenStream;
 ///
 /// One invocation emits the fixed names `State`, `StateId`, `Event`, and
 /// `Transition`; define separate machines in separate modules. Generated code
-/// expects the runtime dependency to be available under the name `fsm`.
+/// expects the runtime dependency to be available under the name `rfsm`.
 #[proc_macro]
 pub fn machine(input: TokenStream) -> TokenStream {
     let definition = syn::parse_macro_input!(input as model::MachineDef);

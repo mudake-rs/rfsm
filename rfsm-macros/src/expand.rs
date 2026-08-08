@@ -199,8 +199,8 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
                 event: &Event,
                 context: &#context,
             ) -> ::core::result::Result<
-                ::fsm::Plan<State, Transition, #effect>,
-                ::fsm::ProcessError<StateId, Event, #rejection>,
+                ::rfsm::Plan<State, Transition, #effect>,
+                ::rfsm::ProcessError<StateId, Event, #rejection>,
             > {
                 let _ = context;
                 let from_id = Self::__state_id(state);
@@ -214,7 +214,7 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
 
                 #(#wildcard_blocks)*
 
-                ::core::result::Result::Err(::fsm::ProcessError::Unhandled {
+                ::core::result::Result::Err(::rfsm::ProcessError::Unhandled {
                     state: from_id,
                     event: event.clone(),
                 })
@@ -224,8 +224,8 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
                 &mut self,
                 event: Event,
             ) -> ::core::result::Result<
-                ::fsm::Applied<State, Transition, #effect>,
-                ::fsm::ProcessError<StateId, Event, #rejection>,
+                ::rfsm::Applied<State, Transition, #effect>,
+                ::rfsm::ProcessError<StateId, Event, #rejection>,
             > {
                 let plan = Self::evaluate(&self.state, &event, &self.context)#await_evaluate?;
                 self.state = plan.to.clone();
@@ -348,7 +348,7 @@ fn selected_row_body(
         RowOutcome::Reject(rejection) => {
             let rejection_ty = &definition.rejection;
             Ok(quote! {
-                return ::core::result::Result::Err(::fsm::ProcessError::Rejected(
+                return ::core::result::Result::Err(::rfsm::ProcessError::Rejected(
                     <#rejection_ty>::#rejection
                 ));
             })
@@ -369,7 +369,7 @@ fn selected_row_body(
             Ok(quote! {
                 let to = #target;
                 let effect: ::core::option::Option<#effect_ty> = #effect;
-                return ::core::result::Result::Ok(::fsm::Plan {
+                return ::core::result::Result::Ok(::rfsm::Plan {
                     transition: Transition::#transition,
                     from: state.clone(),
                     to,

@@ -1,11 +1,11 @@
-# fsm
+# rfsm
 
-`fsm` defines a finite state machine as one state tree and one transition
+`rfsm` defines a finite state machine as one state tree and one transition
 table. The macro generates the state, event, transition, and machine types.
 
 ```rust
 use std::convert::Infallible;
-use fsm::machine;
+use rfsm::machine;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Rejection { AlreadyOpen, AlreadyClosed }
@@ -49,19 +49,19 @@ call-site-friendly names do not collide:
 
 ```rust,ignore
 mod door {
-    use fsm::machine;
+    use rfsm::machine;
 
     machine! { /* one complete machine */ }
 }
 
 mod order {
-    use fsm::machine;
+    use rfsm::machine;
 
     machine! { /* another complete machine */ }
 }
 ```
 
-Generated code currently refers to the runtime crate as `fsm`, so keep that
+Generated code currently refers to the runtime crate as `rfsm`, so keep that
 dependency name in `Cargo.toml` in the 0.1 series.
 
 ## Nested states

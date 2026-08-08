@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use fsm::{ProcessError, machine};
+use rfsm::{ProcessError, machine};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ChargeId(u64);

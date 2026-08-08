@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
-use fsm::{Applied, machine};
+use rfsm::{Applied, machine};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Effect {

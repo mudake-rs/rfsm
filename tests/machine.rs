@@ -1,7 +1,7 @@
 mod flat {
     use std::convert::Infallible;
 
-    use fsm::{ProcessError, machine};
+    use rfsm::{ProcessError, machine};
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Rejection {
@@ -76,7 +76,7 @@ mod flat {
 }
 
 mod nested {
-    use fsm::{ProcessError, machine};
+    use rfsm::{ProcessError, machine};
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct Token(u64);
@@ -246,7 +246,7 @@ mod nested {
 mod deep_hierarchy {
     use std::convert::Infallible;
 
-    use fsm::{ProcessError, machine};
+    use rfsm::{ProcessError, machine};
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Rejection {
@@ -340,7 +340,7 @@ mod async_machine {
     use std::pin::Pin;
     use std::task::{Context, Poll, Waker};
 
-    use fsm::{ProcessError, machine};
+    use rfsm::{ProcessError, machine};
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Rejection {
@@ -469,7 +469,7 @@ mod async_machine {
 mod unhandled {
     use std::convert::Infallible;
 
-    use fsm::{ProcessError, machine};
+    use rfsm::{ProcessError, machine};
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Rejection {}
@@ -512,7 +512,7 @@ mod unhandled {
 }
 
 mod durable_state {
-    use fsm::machine;
+    use rfsm::machine;
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     enum Effect {

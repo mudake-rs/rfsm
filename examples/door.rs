@@ -1,7 +1,7 @@
 use std::convert::Infallible;
 use std::error::Error;
 
-use fsm::{ProcessError, machine};
+use rfsm::{ProcessError, machine};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Rejection {
