@@ -23,6 +23,10 @@ pub struct Validated {
     pub is_async: bool,
 }
 
+pub(crate) fn ident_key(ident: &Ident) -> String {
+    ident.unraw().to_string()
+}
+
 pub fn validate(definition: &MachineDef) -> syn::Result<Validated> {
     let mut errors = Vec::new();
     let flat_states = flatten_states(&definition.states);
@@ -31,12 +35,12 @@ pub fn validate(definition: &MachineDef) -> syn::Result<Validated> {
 
     let states: HashMap<String, &FlatState<'_>> = flat_states
         .iter()
-        .map(|state| (state.node.variant.name.to_string(), state))
+        .map(|state| (ident_key(&state.node.variant.name), state))
         .collect();
     let events: HashMap<String, &VariantDef> = definition
         .events
         .iter()
-        .map(|event| (event.name.to_string(), event))
+        .map(|event| (ident_key(&event.name), event))
         .collect();
 
     let mut callables = Vec::new();
@@ -50,7 +54,7 @@ pub fn validate(definition: &MachineDef) -> syn::Result<Validated> {
 
         match &row.outcome {
             RowOutcome::Transition { transition, .. } => {
-                if transition_names.insert(transition.to_string()) {
+                if transition_names.insert(ident_key(transition)) {
                     transitions.push(transition.clone());
                 } else {
                     errors.push(syn::Error::new(
@@ -60,7 +64,7 @@ pub fn validate(definition: &MachineDef) -> syn::Result<Validated> {
                 }
             }
             RowOutcome::Reject(rejection) => {
-                if rejection_names.insert(rejection.unraw().to_string()) {
+                if rejection_names.insert(ident_key(rejection)) {
                     rejections.push(rejection.clone());
                 }
             }
@@ -147,7 +151,7 @@ fn validate_declarations<'a>(
     let mut state_names = HashSet::new();
     for state in flat_states {
         let name = &state.node.variant.name;
-        if !state_names.insert(name.to_string()) {
+        if !state_names.insert(ident_key(name)) {
             errors.push(syn::Error::new(
                 name.span(),
                 format!("duplicate state `{name}`"),
@@ -158,7 +162,7 @@ fn validate_declarations<'a>(
 
     let mut event_names = HashSet::new();
     for event in &definition.events {
-        if !event_names.insert(event.name.to_string()) {
+        if !event_names.insert(ident_key(&event.name)) {
             errors.push(syn::Error::new(
                 event.name.span(),
                 format!("duplicate event `{}`", event.name),
@@ -173,7 +177,7 @@ fn validate_declarations<'a>(
 fn validate_fields(variant: &VariantDef, kind: &str, errors: &mut Vec<syn::Error>) {
     let mut names = HashSet::new();
     for field in &variant.fields {
-        if !names.insert(field.name.to_string()) {
+        if !names.insert(ident_key(&field.name)) {
             errors.push(syn::Error::new(
                 field.name.span(),
                 format!(
@@ -245,7 +249,7 @@ fn validate_row<'a>(
 
     match &row.source {
         RowSource::Any => {}
-        RowSource::State(pattern) => match states.get(&pattern.name.to_string()) {
+        RowSource::State(pattern) => match states.get(&ident_key(&pattern.name)) {
             Some(state) if state.node.is_compound() => {
                 if pattern.explicit_fields {
                     errors.push(syn::Error::new(
@@ -266,7 +270,7 @@ fn validate_row<'a>(
 
     match &row.event {
         RowEvent::Any => {}
-        RowEvent::Event(pattern) => match events.get(&pattern.name.to_string()) {
+        RowEvent::Event(pattern) => match events.get(&ident_key(&pattern.name)) {
             Some(event) => validate_pattern(pattern, event, "event", &mut bindings, errors),
             None => errors.push(syn::Error::new(
                 pattern.name.span(),
@@ -300,12 +304,12 @@ fn validate_pattern<'a>(
     let fields: HashMap<String, &FieldDef> = variant
         .fields
         .iter()
-        .map(|field| (field.name.to_string(), field))
+        .map(|field| (ident_key(&field.name), field))
         .collect();
     let mut seen = HashSet::new();
 
     for binding in &pattern.fields {
-        let name = binding.to_string();
+        let name = ident_key(binding);
         if !seen.insert(name.clone()) {
             errors.push(syn::Error::new(
                 binding.span(),
@@ -350,7 +354,7 @@ fn validate_target<'a>(
     bindings: &HashMap<String, &'a FieldDef>,
     errors: &mut Vec<syn::Error>,
 ) {
-    let Some(state) = states.get(&target.name.to_string()) else {
+    let Some(state) = states.get(&ident_key(&target.name)) else {
         errors.push(syn::Error::new(
             target.name.span(),
             format!("unknown target state `{}`", target.name),
@@ -373,7 +377,7 @@ fn validate_target<'a>(
         .variant
         .fields
         .iter()
-        .map(|field| (field.name.to_string(), field))
+        .map(|field| (ident_key(&field.name), field))
         .collect();
 
     if fields.is_empty() {
@@ -396,13 +400,13 @@ fn validate_target<'a>(
 
     let mut seen = HashSet::new();
     for target_field in &target.fields {
-        if !seen.insert(target_field.name.to_string()) {
+        if !seen.insert(ident_key(&target_field.name)) {
             errors.push(syn::Error::new(
                 target_field.name.span(),
                 format!("duplicate target field `{}`", target_field.name),
             ));
         }
-        if !fields.contains_key(&target_field.name.to_string()) {
+        if !fields.contains_key(&ident_key(&target_field.name)) {
             errors.push(syn::Error::new(
                 target_field.name.span(),
                 format!(
@@ -411,7 +415,7 @@ fn validate_target<'a>(
                 ),
             ));
         }
-        if !bindings.contains_key(&target_field.binding.to_string()) {
+        if !bindings.contains_key(&ident_key(&target_field.binding)) {
             errors.push(syn::Error::new(
                 target_field.binding.span(),
                 format!(
@@ -443,14 +447,14 @@ fn note_callable(
     let mut arguments = Vec::new();
     let mut seen_arguments = HashSet::new();
     for argument in &callable.arguments {
-        if !seen_arguments.insert(argument.to_string()) {
+        if !seen_arguments.insert(ident_key(argument)) {
             errors.push(syn::Error::new(
                 argument.span(),
                 format!("duplicate callback argument `{argument}`"),
             ));
             continue;
         }
-        match bindings.get(&argument.to_string()) {
+        match bindings.get(&ident_key(argument)) {
             Some(field) => arguments.push((argument.clone(), field.ty.clone())),
             None => errors.push(syn::Error::new(
                 argument.span(),
@@ -461,7 +465,7 @@ fn note_callable(
 
     if let Some(existing) = callables
         .iter()
-        .find(|existing| existing.name == callable.name)
+        .find(|existing| ident_key(&existing.name) == ident_key(&callable.name))
     {
         let same_types = existing.arguments.len() == arguments.len()
             && existing
@@ -506,8 +510,8 @@ fn validate_coverage(
         .iter()
         .map(|state| {
             (
-                state.node.variant.name.to_string(),
-                state.parent.map(ToString::to_string),
+                ident_key(&state.node.variant.name),
+                state.parent.map(ident_key),
             )
         })
         .collect();
@@ -573,7 +577,7 @@ fn validate_coverage(
 fn row_covers_event(row: &Row, event: &Ident) -> bool {
     match &row.event {
         RowEvent::Any => true,
-        RowEvent::Event(pattern) => pattern.name == *event,
+        RowEvent::Event(pattern) => ident_key(&pattern.name) == ident_key(event),
     }
 }
 
@@ -586,8 +590,8 @@ fn row_source_distance(
         return Some(usize::MAX);
     };
 
-    let target = pattern.name.to_string();
-    let mut current = Some(leaf.to_string());
+    let target = ident_key(&pattern.name);
+    let mut current = Some(ident_key(leaf));
     let mut distance = 0;
     while let Some(name) = current {
         if name == target {
@@ -766,12 +770,12 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_state_and_event_names_are_reported() {
+    fn raw_and_plain_declaration_aliases_are_reported() {
         let definition: MachineDef = parse_str(
             r#"
                 name: M,
-                states: { *A, A },
-                events: { Go, Go },
+                states: { *A, r#A, Data { value: u8, r#value: u8 } },
+                events: { Go, r#Go },
                 transitions: { Stayed: A + Go => A }
             "#,
         )
@@ -781,8 +785,9 @@ mod tests {
             .err()
             .unwrap_or_else(|| panic!("expected failure"));
         let message = error.into_compile_error().to_string();
-        assert!(message.contains("duplicate state `A`"));
-        assert!(message.contains("duplicate event `Go`"));
+        assert!(message.contains("duplicate state `r#A`"));
+        assert!(message.contains("duplicate event `r#Go`"));
+        assert!(message.contains("duplicate field `r#value` in state `Data`"));
     }
 
     #[test]
@@ -794,7 +799,7 @@ mod tests {
                 events: { Go },
                 transitions: {
                     Same: A + Go => B,
-                    Same: B + Go => A,
+                    r#Same: B + Go => A,
                 }
             "#,
         )
@@ -806,7 +811,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("duplicate transition label `Same`")
+                .contains("duplicate transition label `r#Same`")
         );
     }
 

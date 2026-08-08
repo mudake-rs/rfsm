@@ -8,18 +8,18 @@ use crate::model::{
     BindingPattern, Callable, CallableRole, FlatState, MachineDef, Row, RowEvent, RowOutcome,
     RowSource, StateNode, TargetState, VariantDef, flatten_states,
 };
-use crate::validate::{CallableDef, Validated};
+use crate::validate::{CallableDef, Validated, ident_key};
 
 pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<TokenStream> {
     let flat_states = flatten_states(&definition.states);
     let state_by_name: HashMap<String, &FlatState<'_>> = flat_states
         .iter()
-        .map(|state| (state.node.variant.name.to_string(), state))
+        .map(|state| (ident_key(&state.node.variant.name), state))
         .collect();
     let event_by_name: HashMap<String, &VariantDef> = definition
         .events
         .iter()
-        .map(|event| (event.name.to_string(), event))
+        .map(|event| (ident_key(&event.name), event))
         .collect();
 
     let initial = definition
@@ -90,7 +90,13 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
         let blocks = definition
             .rows
             .iter()
-            .filter(|row| matches!(&row.source, RowSource::State(pattern) if pattern.name == *state_name))
+            .filter(|row| {
+                matches!(
+                    &row.source,
+                    RowSource::State(pattern)
+                        if ident_key(&pattern.name) == ident_key(state_name)
+                )
+            })
             .map(|row| {
                 row_block(
                     row,
@@ -325,7 +331,7 @@ fn row_block(
     let source_pattern = match &row.source {
         RowSource::Any => None,
         RowSource::State(pattern) => {
-            let state = states.get(&pattern.name.to_string()).ok_or_else(|| {
+            let state = states.get(&ident_key(&pattern.name)).ok_or_else(|| {
                 syn::Error::new(pattern.name.span(), "validated source state disappeared")
             })?;
             if state.node.is_compound() {
@@ -338,7 +344,7 @@ fn row_block(
     let event_pattern = match &row.event {
         RowEvent::Any => None,
         RowEvent::Event(pattern) => {
-            let event = events.get(&pattern.name.to_string()).ok_or_else(|| {
+            let event = events.get(&ident_key(&pattern.name)).ok_or_else(|| {
                 syn::Error::new(pattern.name.span(), "validated event disappeared")
             })?;
             Some(binding_pattern(quote!(Event), pattern, event))
@@ -476,7 +482,7 @@ fn target_expression(
     states: &HashMap<String, &FlatState<'_>>,
 ) -> syn::Result<TokenStream> {
     let state = states
-        .get(&target.name.to_string())
+        .get(&ident_key(&target.name))
         .ok_or_else(|| syn::Error::new(target.name.span(), "validated target state disappeared"))?;
     if state.node.is_compound() {
         return initial_expression(state.node);
@@ -492,7 +498,7 @@ fn target_expression(
         .variant
         .fields
         .iter()
-        .map(|field| (field.name.to_string(), &field.ty))
+        .map(|field| (ident_key(&field.name), &field.ty))
         .collect();
     let fields = target
         .fields
@@ -500,7 +506,7 @@ fn target_expression(
         .map(|field| {
             let name = &field.name;
             let binding = &field.binding;
-            let ty = fields_by_name.get(&name.to_string()).ok_or_else(|| {
+            let ty = fields_by_name.get(&ident_key(name)).ok_or_else(|| {
                 syn::Error::new(name.span(), "validated target field disappeared")
             })?;
             Ok(quote!(#name: <#ty as ::core::clone::Clone>::clone(#binding)))

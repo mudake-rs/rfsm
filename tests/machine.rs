@@ -68,6 +68,31 @@ mod flat {
     }
 }
 
+mod reject_only {
+    use rfsm::{ProcessError, machine};
+
+    machine! {
+        name: RefusalOnly,
+        states: { *Locked },
+        events: { Try },
+        transitions: {
+            Locked + Try => reject Denied,
+        }
+    }
+
+    #[test]
+    fn rejection_only_machine_has_no_committable_transition() {
+        let _uninhabited: fn(Transition) -> ! = |transition| match transition {};
+        let mut machine = RefusalOnly::new();
+
+        assert_eq!(
+            machine.process(Event::Try),
+            Err(ProcessError::Rejected(Rejection::Denied))
+        );
+        assert_eq!(machine.state(), &State::Locked);
+    }
+}
+
 mod nested {
     use rfsm::{ProcessError, machine};
 
@@ -90,9 +115,9 @@ mod nested {
         effect: Effect,
         states: {
             *Idle,
-            Flow {
+            r#Flow {
                 *Waiting,
-                Ready { token: Token },
+                r#Ready { r#token: Token },
                 Review,
             },
             Failed,
@@ -100,7 +125,7 @@ mod nested {
         },
         events: {
             Begin,
-            Accept { token: Token },
+            r#Accept { token: Token },
             Cancel,
             Finish,
         },
@@ -108,9 +133,9 @@ mod nested {
             ParentAccepted: Flow + Accept { .. } => Failed,
             Flow + Cancel => reject CancellationBlocked,
             Began: Idle + Begin => Flow,
-            Accepted: Waiting + Accept { token } / record(token) => Ready { token },
+            r#Accepted: Waiting + Accept { r#token } / record(token) => Ready { token },
             Ready { .. } + Accept { .. } => reject Duplicate,
-            CancelledReady: Ready { token } + Cancel [may_cancel]
+            CancelledReady: Ready { token } + Cancel [r#may_cancel]
                 / release(token) => Failed,
             CancelledWaiting: Waiting + Cancel [may_cancel] => Failed,
             Finished: Ready { .. } + Finish => Done,
@@ -185,21 +210,7 @@ mod nested {
     }
 
     #[test]
-    fn leaf_guarded_transition_precedes_parent_even_when_declared_later() {
-        let token = Token(7);
-        let mut workflow = Workflow::from_state(State::Ready { token }, Facts { may_cancel: true });
-
-        let applied = workflow
-            .process(Event::Cancel)
-            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
-
-        assert_eq!(applied.transition, Transition::CancelledReady);
-        assert_eq!(applied.effect, Some(Effect::Release(token)));
-        assert_eq!(workflow.state(), &State::Failed);
-    }
-
-    #[test]
-    fn failed_child_guard_falls_through_to_parent_rejection() {
+    fn failed_child_guard_falls_through_then_context_update_selects_the_leaf_row() {
         let token = Token(7);
         let mut workflow =
             Workflow::from_state(State::Ready { token }, Facts { may_cancel: false });
@@ -211,6 +222,15 @@ mod nested {
             Err(ProcessError::Rejected(Rejection::CancellationBlocked))
         );
         assert_eq!(workflow.state(), &State::Ready { token });
+
+        workflow.context_mut().may_cancel = true;
+        let applied = workflow
+            .process(Event::Cancel)
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+
+        assert_eq!(applied.transition, Transition::CancelledReady);
+        assert_eq!(applied.effect, Some(Effect::Release(token)));
+        assert_eq!(workflow.state(), &State::Failed);
     }
 
     #[test]

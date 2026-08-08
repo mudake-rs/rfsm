@@ -1,4 +1,5 @@
 //! Proc-macro implementation for `rfsm`.
+#![forbid(unsafe_code)]
 
 mod expand;
 mod model;
