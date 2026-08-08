@@ -2,3 +2,7 @@ local/
 AGENTS.md
 PRODUCT.md
 /target/
+/.agents/
+/.claude/
+/.codex/
+/.kimi-code/
