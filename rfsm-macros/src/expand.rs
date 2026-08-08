@@ -30,9 +30,10 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
     let initial_state = initial_expression(initial)?;
 
     let name = &definition.name;
-    let context = &definition.context;
-    let effect = &definition.effect;
-    let rejection = &definition.rejection;
+    let effect = definition.effect.as_ref().map_or_else(
+        || quote!(::core::convert::Infallible),
+        |effect| quote!(#effect),
+    );
     let context_trait = format_ident!("{}Context", name);
     let asyncness = validated.is_async.then(|| quote!(async));
     let await_evaluate = validated.is_async.then(|| quote!(.await));
@@ -44,10 +45,11 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
     let state_id_variants = flat_states.iter().map(|state| &state.node.variant.name);
     let event_variants = definition.events.iter().map(declaration_variant);
     let transition_variants = &validated.transitions;
+    let rejection_variants = &validated.rejections;
     let context_methods: Vec<TokenStream> = validated
         .callables
         .iter()
-        .map(|callable| context_method(callable, effect))
+        .map(|callable| context_method(callable, &effect))
         .collect();
     let context_trait_item = if context_methods.is_empty() {
         quote!()
@@ -120,6 +122,55 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
         })
         .collect::<syn::Result<Vec<_>>>()?;
 
+    let (context_field, constructors, evaluate_context, process_context) = match &definition.context
+    {
+        Some(context) => (
+            quote!(context: #context,),
+            quote! {
+                pub fn new(context: #context) -> Self {
+                    Self {
+                        state: #initial_state,
+                        context,
+                    }
+                }
+
+                pub fn from_state(state: State, context: #context) -> Self {
+                    Self { state, context }
+                }
+
+                pub fn context(&self) -> &#context {
+                    &self.context
+                }
+
+                pub fn context_mut(&mut self) -> &mut #context {
+                    &mut self.context
+                }
+            },
+            quote!(, context: &#context),
+            quote!(, &self.context),
+        ),
+        None => (
+            quote!(),
+            quote! {
+                pub fn new() -> Self {
+                    Self {
+                        state: #initial_state,
+                    }
+                }
+
+                pub fn from_state(state: State) -> Self {
+                    Self { state }
+                }
+            },
+            quote!(),
+            quote!(),
+        ),
+    };
+    let use_context = definition
+        .context
+        .is_some()
+        .then(|| quote!(let _ = context;));
+
     Ok(quote! {
         #[allow(missing_docs)]
         #[derive(Clone, Debug, PartialEq)]
@@ -145,26 +196,23 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
             #(#transition_variants),*
         }
 
+        #[allow(missing_docs)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        pub enum Rejection {
+            #(#rejection_variants),*
+        }
+
         #context_trait_item
 
         #[allow(missing_docs)]
         pub struct #name {
             state: State,
-            context: #context,
+            #context_field
         }
 
         #[allow(missing_docs)]
         impl #name {
-            pub fn new(context: #context) -> Self {
-                Self {
-                    state: #initial_state,
-                    context,
-                }
-            }
-
-            pub fn from_state(state: State, context: #context) -> Self {
-                Self { state, context }
-            }
+            #constructors
 
             pub fn state(&self) -> &State {
                 &self.state
@@ -172,14 +220,6 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
 
             pub fn state_id(&self) -> StateId {
                 Self::__state_id(&self.state)
-            }
-
-            pub fn context(&self) -> &#context {
-                &self.context
-            }
-
-            pub fn context_mut(&mut self) -> &mut #context {
-                &mut self.context
             }
 
             pub fn is_in(&self, ancestor: StateId) -> bool {
@@ -196,13 +236,13 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
             #[allow(irrefutable_let_patterns, unreachable_code)]
             pub #asyncness fn evaluate(
                 state: &State,
-                event: &Event,
-                context: &#context,
+                event: &Event
+                #evaluate_context
             ) -> ::core::result::Result<
                 ::rfsm::Plan<State, Transition, #effect>,
-                ::rfsm::ProcessError<StateId, Event, #rejection>,
+                ::rfsm::ProcessError<StateId, Event, Rejection>,
             > {
-                let _ = context;
+                #use_context
                 let from_id = Self::__state_id(state);
                 let mut level = ::core::option::Option::Some(from_id);
                 while let ::core::option::Option::Some(at) = level {
@@ -225,9 +265,9 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
                 event: Event,
             ) -> ::core::result::Result<
                 ::rfsm::Applied<State, Transition, #effect>,
-                ::rfsm::ProcessError<StateId, Event, #rejection>,
+                ::rfsm::ProcessError<StateId, Event, Rejection>,
             > {
-                let plan = Self::evaluate(&self.state, &event, &self.context)#await_evaluate?;
+                let plan = Self::evaluate(&self.state, &event #process_context)#await_evaluate?;
                 self.state = plan.to.clone();
                 ::core::result::Result::Ok(plan.confirm())
             }
@@ -261,7 +301,7 @@ fn declaration_variant(variant: &VariantDef) -> TokenStream {
     }
 }
 
-fn context_method(callable: &CallableDef, effect: &syn::Type) -> TokenStream {
+fn context_method(callable: &CallableDef, effect: &TokenStream) -> TokenStream {
     let name = &callable.name;
     let asyncness = callable.is_async.then(|| quote!(async));
     let arguments = callable
@@ -308,7 +348,7 @@ fn row_block(
     let body = selected_row_body(row, definition, context_trait, states)?;
     let guarded = match &row.guard {
         Some(guard) => {
-            let call = callback_call(guard, definition, context_trait);
+            let call = callback_call(guard, definition, context_trait)?;
             quote! {
                 if #call {
                     #body
@@ -345,23 +385,23 @@ fn selected_row_body(
     states: &HashMap<String, &FlatState<'_>>,
 ) -> syn::Result<TokenStream> {
     match &row.outcome {
-        RowOutcome::Reject(rejection) => {
-            let rejection_ty = &definition.rejection;
-            Ok(quote! {
-                return ::core::result::Result::Err(::rfsm::ProcessError::Rejected(
-                    <#rejection_ty>::#rejection
-                ));
-            })
-        }
+        RowOutcome::Reject(rejection) => Ok(quote! {
+            return ::core::result::Result::Err(::rfsm::ProcessError::Rejected(
+                Rejection::#rejection
+            ));
+        }),
         RowOutcome::Transition { transition, target } => {
             let target = match target {
                 Some(target) => target_expression(target, states)?,
                 None => quote!(state.clone()),
             };
-            let effect_ty = &definition.effect;
+            let effect_ty = definition.effect.as_ref().map_or_else(
+                || quote!(::core::convert::Infallible),
+                |effect| quote!(#effect),
+            );
             let effect = match &row.effect {
                 Some(callable) => {
-                    let call = callback_call(callable, definition, context_trait);
+                    let call = callback_call(callable, definition, context_trait)?;
                     quote!(::core::option::Option::Some(#call))
                 }
                 None => quote!(::core::option::Option::None),
@@ -384,12 +424,17 @@ fn callback_call(
     callable: &Callable,
     definition: &MachineDef,
     context_trait: &Ident,
-) -> TokenStream {
-    let context = &definition.context;
+) -> syn::Result<TokenStream> {
+    let context = definition.context.as_ref().ok_or_else(|| {
+        syn::Error::new(
+            callable.name.span(),
+            "validated callback is missing its context type",
+        )
+    })?;
     let name = &callable.name;
     let arguments = &callable.arguments;
     let await_call = callable.is_async.then(|| quote!(.await));
-    quote!(<#context as #context_trait>::#name(context, #(#arguments),*)#await_call)
+    Ok(quote!(<#context as #context_trait>::#name(context, #(#arguments),*)#await_call))
 }
 
 fn binding_pattern(

@@ -8,12 +8,6 @@ enum Effect {
     WriteAudit { actor: String },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Rejection {
-    NotAllowed,
-    AlreadyApproved,
-}
-
 struct Facts {
     may_approve: bool,
     actor: String,
@@ -23,7 +17,6 @@ machine! {
     name: Approvals,
     context: Facts,
     effect: Effect,
-    rejection: Rejection,
 
     states: {
         *Pending,

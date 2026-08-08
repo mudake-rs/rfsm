@@ -1,20 +1,8 @@
 mod flat {
-    use std::convert::Infallible;
-
     use rfsm::{ProcessError, machine};
-
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum Rejection {
-        AlreadyOpen,
-        AlreadyClosed,
-        InvalidEvent,
-    }
 
     machine! {
         name: Door,
-        context: (),
-        effect: Infallible,
-        rejection: Rejection,
         states: { *Closed, Open },
         events: { Open, Close, Knock },
         transitions: {
@@ -29,7 +17,7 @@ mod flat {
 
     #[test]
     fn accepted_transition_commits_and_reports_business_identity() {
-        let mut door = Door::new(());
+        let mut door = Door::new();
 
         let knocked = door
             .process(Event::Knock)
@@ -55,11 +43,16 @@ mod flat {
             .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
         assert_eq!(closed.transition, Transition::ClosedAgain);
         assert_eq!(door.state(), &State::Closed);
+
+        let plan = Door::evaluate(&State::Closed, &Event::Open)
+            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
+        assert_eq!(plan.transition, Transition::Opened);
+        assert_eq!(plan.to, State::Open);
     }
 
     #[test]
     fn explicit_rejection_preserves_current_state() {
-        let mut door = Door::from_state(State::Open, ());
+        let mut door = Door::from_state(State::Open);
 
         let rejected = door.process(Event::Open);
 
@@ -87,13 +80,6 @@ mod nested {
         Release(Token),
     }
 
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum Rejection {
-        Duplicate,
-        CancellationBlocked,
-        InvalidEvent,
-    }
-
     struct Facts {
         may_cancel: bool,
     }
@@ -102,7 +88,6 @@ mod nested {
         name: Workflow,
         context: Facts,
         effect: Effect,
-        rejection: Rejection,
         states: {
             *Idle,
             Flow {
@@ -244,15 +229,7 @@ mod nested {
 }
 
 mod deep_hierarchy {
-    use std::convert::Infallible;
-
     use rfsm::{ProcessError, machine};
-
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum Rejection {
-        ChildStopped,
-        Fallback,
-    }
 
     struct Facts {
         allow_inner: bool,
@@ -261,8 +238,6 @@ mod deep_hierarchy {
     machine! {
         name: Deep,
         context: Facts,
-        effect: Infallible,
-        rejection: Rejection,
         states: {
             *Outside,
             Outer {
@@ -343,11 +318,6 @@ mod async_machine {
     use rfsm::{ProcessError, machine};
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum Rejection {
-        Denied,
-    }
-
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub enum Effect {
         Entered,
     }
@@ -377,7 +347,6 @@ mod async_machine {
         name: AsyncGate,
         context: Facts,
         effect: Effect,
-        rejection: Rejection,
         states: { *Closed, Open },
         events: { Enter },
         transitions: {
@@ -467,20 +436,13 @@ mod async_machine {
 }
 
 mod unhandled {
-    use std::convert::Infallible;
-
     use rfsm::{ProcessError, machine};
-
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum Rejection {}
 
     struct Facts;
 
     machine! {
         name: Guarded,
         context: Facts,
-        effect: Infallible,
-        rejection: Rejection,
         states: { *Waiting },
         events: { Try },
         transitions: {
@@ -519,18 +481,12 @@ mod durable_state {
         Audit(String),
     }
 
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum Rejection {
-        Invalid,
-    }
-
     struct Facts;
 
     machine! {
         name: Approval,
         context: Facts,
         effect: Effect,
-        rejection: Rejection,
         states: { *Pending, Approved { reference: String } },
         events: { Approve { reference: String } },
         transitions: {

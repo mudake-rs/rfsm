@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use quote::ToTokens;
+use syn::ext::IdentExt;
 use syn::{Ident, Type};
 
 use crate::model::{
@@ -18,6 +19,7 @@ pub struct CallableDef {
 pub struct Validated {
     pub callables: Vec<CallableDef>,
     pub transitions: Vec<Ident>,
+    pub rejections: Vec<Ident>,
     pub is_async: bool,
 }
 
@@ -40,18 +42,27 @@ pub fn validate(definition: &MachineDef) -> syn::Result<Validated> {
     let mut callables = Vec::new();
     let mut transitions = Vec::new();
     let mut transition_names = HashSet::new();
+    let mut rejections = Vec::new();
+    let mut rejection_names = HashSet::new();
 
     for row in &definition.rows {
         let bindings = validate_row(row, &states, &events, &mut errors);
 
-        if let RowOutcome::Transition { transition, .. } = &row.outcome {
-            if transition_names.insert(transition.to_string()) {
-                transitions.push(transition.clone());
-            } else {
-                errors.push(syn::Error::new(
-                    transition.span(),
-                    format!("duplicate transition label `{transition}`"),
-                ));
+        match &row.outcome {
+            RowOutcome::Transition { transition, .. } => {
+                if transition_names.insert(transition.to_string()) {
+                    transitions.push(transition.clone());
+                } else {
+                    errors.push(syn::Error::new(
+                        transition.span(),
+                        format!("duplicate transition label `{transition}`"),
+                    ));
+                }
+            }
+            RowOutcome::Reject(rejection) => {
+                if rejection_names.insert(rejection.unraw().to_string()) {
+                    rejections.push(rejection.clone());
+                }
             }
         }
 
@@ -79,11 +90,35 @@ pub fn validate(definition: &MachineDef) -> syn::Result<Validated> {
         validate_coverage(definition, &flat_states, &mut errors);
     }
 
+    if definition.context.is_none() {
+        if let Some(callable) = callables.first() {
+            errors.push(syn::Error::new(
+                callable.name.span(),
+                "`context` is required when transition callbacks are used",
+            ));
+        }
+    }
+    if definition.effect.is_none() {
+        if let Some(callable) = callables
+            .iter()
+            .find(|callable| callable.role == CallableRole::Effect)
+        {
+            errors.push(syn::Error::new(
+                callable.name.span(),
+                format!(
+                    "`effect` is required because effect callback `{}` is used",
+                    callable.name
+                ),
+            ));
+        }
+    }
+
     if errors.is_empty() {
         let is_async = callables.iter().any(|callable| callable.is_async);
         Ok(Validated {
             callables,
             transitions,
+            rejections,
             is_async,
         })
     } else {
@@ -584,9 +619,6 @@ mod tests {
         let definition: MachineDef = parse_str(
             r#"
                 name: M,
-                context: (),
-                effect: (),
-                rejection: (),
                 states: { *Root { *A, B } },
                 events: { Go },
                 transitions: {
@@ -605,9 +637,6 @@ mod tests {
         let definition: MachineDef = parse_str(
             r#"
                 name: M,
-                context: (),
-                effect: (),
-                rejection: (),
                 states: { *A, B },
                 events: { Go },
                 transitions: {
@@ -628,9 +657,6 @@ mod tests {
         let definition: MachineDef = parse_str(
             r#"
                 name: M,
-                context: (),
-                effect: (),
-                rejection: (),
                 states: { *Root { A, B } },
                 events: { Go },
                 transitions: { Handled: Root + Go => Root }
@@ -653,9 +679,6 @@ mod tests {
         let definition: MachineDef = parse_str(
             r#"
                 name: M,
-                context: (),
-                effect: (),
-                rejection: (),
                 states: { *A, B { value: u8 } },
                 events: { Go },
                 transitions: {
@@ -678,8 +701,6 @@ mod tests {
             r#"
                 name: M,
                 context: (),
-                effect: (),
-                rejection: (),
                 states: { *A },
                 events: { Byte { value: u8 }, Word { value: u16 } },
                 transitions: {
@@ -707,9 +728,6 @@ mod tests {
         let definition: MachineDef = parse_str(
             r#"
                 name: M,
-                context: (),
-                effect: (),
-                rejection: (),
                 states: { *A },
                 events: { Go },
                 transitions: {
@@ -732,8 +750,6 @@ mod tests {
             r#"
                 name: M,
                 context: (),
-                effect: (),
-                rejection: (),
                 states: { *A },
                 events: { Go },
                 transitions: {
@@ -754,9 +770,6 @@ mod tests {
         let definition: MachineDef = parse_str(
             r#"
                 name: M,
-                context: (),
-                effect: (),
-                rejection: (),
                 states: { *A, A },
                 events: { Go, Go },
                 transitions: { Stayed: A + Go => A }
@@ -777,9 +790,6 @@ mod tests {
         let definition: MachineDef = parse_str(
             r#"
                 name: M,
-                context: (),
-                effect: (),
-                rejection: (),
                 states: { *A, B },
                 events: { Go },
                 transitions: {
@@ -805,9 +815,6 @@ mod tests {
         let definition: MachineDef = parse_str(
             r#"
                 name: M,
-                context: (),
-                effect: (),
-                rejection: (),
                 states: { *A },
                 events: { Go },
                 transitions: {
@@ -826,5 +833,76 @@ mod tests {
         assert!(message.contains("unknown source state `B`"));
         assert!(message.contains("unknown event `Stop`"));
         assert!(message.contains("unknown target state `C`"));
+    }
+
+    #[test]
+    fn callback_requires_explicit_context() {
+        let definition: MachineDef = parse_str(
+            r#"
+                name: M,
+                states: { *A },
+                events: { Go },
+                transitions: {
+                    Moved: A + Go [allowed] => A,
+                    A + Go => reject Denied,
+                }
+            "#,
+        )
+        .unwrap_or_else(|error| panic!("unexpected parse failure: {error}"));
+
+        let error = validate(&definition)
+            .err()
+            .unwrap_or_else(|| panic!("expected failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("`context` is required when transition callbacks are used")
+        );
+    }
+
+    #[test]
+    fn effect_callback_requires_explicit_effect_type() {
+        let definition: MachineDef = parse_str(
+            r#"
+                name: M,
+                context: (),
+                states: { *A },
+                events: { Go },
+                transitions: {
+                    Moved: A + Go / emit => A,
+                }
+            "#,
+        )
+        .unwrap_or_else(|error| panic!("unexpected parse failure: {error}"));
+
+        let error = validate(&definition)
+            .err()
+            .unwrap_or_else(|| panic!("expected failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("`effect` is required because effect callback `emit` is used")
+        );
+    }
+
+    #[test]
+    fn raw_and_plain_spellings_share_one_rejection_variant() {
+        let definition: MachineDef = parse_str(
+            r#"
+                name: M,
+                states: { *A, B },
+                events: { Go },
+                transitions: {
+                    A + Go => reject Denied,
+                    B + Go => reject r#Denied,
+                }
+            "#,
+        )
+        .unwrap_or_else(|error| panic!("unexpected parse failure: {error}"));
+
+        let validated = validate(&definition)
+            .unwrap_or_else(|error| panic!("unexpected validation failure: {error}"));
+        assert_eq!(validated.rejections.len(), 1);
+        assert_eq!(validated.rejections[0].unraw(), "Denied");
     }
 }

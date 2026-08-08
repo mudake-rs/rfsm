@@ -1,20 +1,9 @@
-use std::convert::Infallible;
 use std::error::Error;
 
 use rfsm::{ProcessError, machine};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Rejection {
-    AlreadyOpen,
-    AlreadyClosed,
-}
-
 machine! {
     name: Door,
-    context: (),
-    effect: Infallible,
-    rejection: Rejection,
-
     states: { *Closed, Open },
     events: { Open, Close },
 
@@ -27,7 +16,7 @@ machine! {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut door = Door::new(());
+    let mut door = Door::new();
 
     let opened = door.process(Event::Open)?;
     assert_eq!(door.state(), &State::Open);

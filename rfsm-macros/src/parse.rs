@@ -11,7 +11,6 @@ impl Parse for MachineDef {
         let mut name = None;
         let mut context = None;
         let mut effect = None;
-        let mut rejection = None;
         let mut states = None;
         let mut events = None;
         let mut rows = None;
@@ -24,7 +23,12 @@ impl Parse for MachineDef {
                 "name" => set_once(&mut name, input.parse()?, &key)?,
                 "context" => set_once(&mut context, input.parse::<Type>()?, &key)?,
                 "effect" => set_once(&mut effect, input.parse::<Type>()?, &key)?,
-                "rejection" => set_once(&mut rejection, input.parse::<Type>()?, &key)?,
+                "rejection" => {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "`rejection` is generated from `reject Reason` rows and must not be declared",
+                    ));
+                }
                 "states" => {
                     let content;
                     braced!(content in input);
@@ -44,7 +48,7 @@ impl Parse for MachineDef {
                     return Err(syn::Error::new(
                         key.span(),
                         format!(
-                            "unknown key `{other}`; expected name, context, effect, rejection, states, events, or transitions"
+                            "unknown key `{other}`; expected name, context, effect, states, events, or transitions"
                         ),
                     ));
                 }
@@ -57,9 +61,8 @@ impl Parse for MachineDef {
 
         Ok(Self {
             name: name.ok_or_else(|| input.error("missing required key `name`"))?,
-            context: context.ok_or_else(|| input.error("missing required key `context`"))?,
-            effect: effect.ok_or_else(|| input.error("missing required key `effect`"))?,
-            rejection: rejection.ok_or_else(|| input.error("missing required key `rejection`"))?,
+            context,
+            effect,
             states: states.ok_or_else(|| input.error("missing required key `states`"))?,
             events: events.ok_or_else(|| input.error("missing required key `events`"))?,
             rows: rows.ok_or_else(|| input.error("missing required key `transitions`"))?,
@@ -377,9 +380,6 @@ mod tests {
         let result = parse_str::<MachineDef>(
             r#"
                 name: M,
-                context: (),
-                effect: (),
-                rejection: (),
                 states: { *Payment {} },
                 events: { Go },
                 transitions: { Stayed: Payment + Go => Payment }
@@ -392,5 +392,23 @@ mod tests {
                 .to_string()
                 .contains("state `Payment` uses empty braces")
         );
+    }
+
+    #[test]
+    fn explicit_rejection_type_has_a_migration_error() {
+        let result = parse_str::<MachineDef>(
+            r#"
+                name: M,
+                rejection: Refusal,
+                states: { *A },
+                events: { Go },
+                transitions: { A + Go => reject Denied }
+            "#,
+        );
+
+        let error = result.err().unwrap_or_else(|| panic!("expected failure"));
+        assert!(error.to_string().contains(
+            "`rejection` is generated from `reject Reason` rows and must not be declared"
+        ));
     }
 }

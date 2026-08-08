@@ -11,13 +11,6 @@ enum Effect {
     RefundCharge(ChargeId),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Rejection {
-    AlreadyAuthorized,
-    CancellationBlocked,
-    InvalidEvent,
-}
-
 struct Facts {
     may_cancel: bool,
 }
@@ -26,7 +19,6 @@ machine! {
     name: Orders,
     context: Facts,
     effect: Effect,
-    rejection: Rejection,
 
     states: {
         *Draft,

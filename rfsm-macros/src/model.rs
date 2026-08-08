@@ -93,9 +93,8 @@ pub struct Row {
 
 pub struct MachineDef {
     pub name: Ident,
-    pub context: Type,
-    pub effect: Type,
-    pub rejection: Type,
+    pub context: Option<Type>,
+    pub effect: Option<Type>,
     pub states: Vec<StateNode>,
     pub events: Vec<VariantDef>,
     pub rows: Vec<Row>,

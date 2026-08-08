@@ -16,9 +16,6 @@ use proc_macro::TokenStream;
 /// ```text
 /// machine! {
 ///     name: Door,
-///     context: (),
-///     effect: Infallible,
-///     rejection: Rejection,
 ///     states: { *Closed, Open },
 ///     events: { Open, Close },
 ///     transitions: {
@@ -27,6 +24,10 @@ use proc_macro::TokenStream;
 ///     }
 /// }
 /// ```
+///
+/// `context` is required only for machines with callbacks. `effect` is
+/// required only when an effect factory is used. Rejection reasons are
+/// collected into a generated `Rejection` enum.
 ///
 /// A guard is written as `[guard(arguments)]`; an effect factory is written as
 /// `/ effect(arguments)`. Prefix either callback with `async` to generate async
@@ -40,9 +41,10 @@ use proc_macro::TokenStream;
 /// guard falls through; an explicit rejection stops selection. `=> _` accepts
 /// a stay transition.
 ///
-/// One invocation emits the fixed names `State`, `StateId`, `Event`, and
-/// `Transition`; define separate machines in separate modules. Generated code
-/// expects the runtime dependency to be available under the name `rfsm`.
+/// One invocation emits the fixed names `State`, `StateId`, `Event`,
+/// `Transition`, and `Rejection`; define separate machines in separate modules.
+/// Generated code expects the runtime dependency to be available under the
+/// name `rfsm`.
 #[proc_macro]
 pub fn machine(input: TokenStream) -> TokenStream {
     let definition = syn::parse_macro_input!(input as model::MachineDef);

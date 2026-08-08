@@ -1,21 +1,14 @@
 # rfsm
 
 `rfsm` defines a finite state machine as one state tree and one transition
-table. The macro generates the state, event, transition, and machine types.
+table. The macro generates the state, event, transition, rejection, and machine
+types.
 
 ```rust
-use std::convert::Infallible;
 use rfsm::machine;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Rejection { AlreadyOpen, AlreadyClosed }
 
 machine! {
     name: Door,
-    context: (),
-    effect: Infallible,
-    rejection: Rejection,
-
     states: { *Closed, Open },
     events: { Open, Close },
 
@@ -27,7 +20,7 @@ machine! {
     }
 }
 
-let mut door = Door::new(());
+let mut door = Door::new();
 let applied = door.process(Event::Open)?;
 
 assert_eq!(door.state(), &State::Open);
@@ -41,11 +34,16 @@ effect factories use `/ effect`. Every accepted row has a unique transition
 label. Use `=> _` for an accepted stay transition that keeps the active state
 and still returns an `Applied` result.
 
+`context:` is required only when the table uses guard or effect callbacks.
+`effect:` is required only when a `/ effect` callback is present. Rejection
+reasons are collected from `reject Reason` rows into the generated `Rejection`
+enum.
+
 ## Generated scope
 
-Each `machine!` invocation generates `State`, `StateId`, `Event`, and
-`Transition` in its scope. Put each machine in its own module so these short,
-call-site-friendly names do not collide:
+Each `machine!` invocation generates `State`, `StateId`, `Event`, `Transition`,
+and `Rejection` in its scope. Put each machine in its own module so these
+short, call-site-friendly names do not collide:
 
 ```rust,ignore
 mod door {
