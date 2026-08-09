@@ -17,7 +17,6 @@ pub struct Revision {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Effect {
     Persist(Revision),
-    AuditConsumption { request_id: u64 },
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -37,11 +36,15 @@ machine! {
     effect: Effect,
 
     states: {
-        *None,
-        Requested,
-        Refunded,
-        Declined,
-        Reversed,
+        *Live {
+            *Effective {
+                *None,
+                Requested,
+                Declined,
+                Reversed,
+            },
+            Refunded,
+        },
         LegacyRevoked,
     },
     events: {
@@ -53,15 +56,11 @@ machine! {
         Decline { incoming_signed_at: Timestamp },
         Reversal { incoming_signed_at: Timestamp },
         ActiveRecovered { incoming_signed_at: Timestamp },
-        ConsumptionRequested { request_id: u64 },
+        ConsumptionRequested,
     },
 
     transitions: {
-        LegacyRevoked + Refund { .. } => reject ManualRepairRequired,
-        LegacyRevoked + Decline { .. } => reject ManualRepairRequired,
-        LegacyRevoked + Reversal { .. } => reject ManualRepairRequired,
-        LegacyRevoked + ActiveRecovered { .. } => reject ManualRepairRequired,
-        LegacyRevoked + ConsumptionRequested { .. } => reject ManualRepairRequired,
+        LegacyRevoked + _ => reject ManualRepairRequired,
 
         DuplicateRefund: Refunded + Refund {
             incoming_signed_at,
@@ -72,57 +71,50 @@ machine! {
             [same_clear(incoming_signed_at)] => _,
         DuplicateReversal: Reversed + Reversal { incoming_signed_at }
             [same_clear(incoming_signed_at)] => _,
-        DuplicateActiveNone: None + ActiveRecovered { incoming_signed_at }
-            [same_clear(incoming_signed_at)] => _,
-        DuplicateActiveRequested: Requested + ActiveRecovered { incoming_signed_at }
-            [same_clear(incoming_signed_at)] => _,
-        DuplicateActiveDeclined: Declined + ActiveRecovered { incoming_signed_at }
-            [same_clear(incoming_signed_at)] => _,
-        DuplicateActiveReversed: Reversed + ActiveRecovered { incoming_signed_at }
+        DuplicateActiveRecovery: Effective + ActiveRecovered { incoming_signed_at }
             [same_clear(incoming_signed_at)] => _,
 
         Refunded + Decline { incoming_signed_at }
             [same_clock(incoming_signed_at)] => reject ConflictingRevision,
         Refunded + Decline { incoming_signed_at }
             [newer(incoming_signed_at)] => reject DeclineAfterRefund,
+        Refunded + Decline { .. } => reject StaleRevision,
 
         RefundedRecovered: Refunded + ActiveRecovered { incoming_signed_at }
             [newer(incoming_signed_at)] / persist_clear(incoming_signed_at) => Reversed,
 
-        ConsumedFromNone: None + ConsumptionRequested { request_id }
-            / audit_consumption(request_id) => Requested,
+        ConsumptionMarked: None + ConsumptionRequested => Requested,
 
-        _ + Refund { incoming_signed_at, .. }
+        Live + Refund { incoming_signed_at, .. }
             [same_clock(incoming_signed_at)] => reject ConflictingRevision,
-        AppliedRefund: _ + Refund {
+        AppliedRefund: Live + Refund {
             incoming_signed_at,
             incoming_revoked_at,
             incoming_percentage,
         } [newer(incoming_signed_at)]
             / persist_refund(incoming_signed_at, incoming_revoked_at, incoming_percentage)
             => Refunded,
-        _ + Refund { .. } => reject StaleRevision,
+        Live + Refund { .. } => reject StaleRevision,
 
-        _ + Decline { incoming_signed_at }
+        Effective + Decline { incoming_signed_at }
             [same_clock(incoming_signed_at)] => reject ConflictingRevision,
-        AppliedDecline: _ + Decline { incoming_signed_at }
+        AppliedDecline: Effective + Decline { incoming_signed_at }
             [newer(incoming_signed_at)] / persist_clear(incoming_signed_at) => Declined,
-        _ + Decline { .. } => reject StaleRevision,
+        Effective + Decline { .. } => reject StaleRevision,
 
-        _ + Reversal { incoming_signed_at }
+        Live + Reversal { incoming_signed_at }
             [same_clock(incoming_signed_at)] => reject ConflictingRevision,
-        AppliedReversal: _ + Reversal { incoming_signed_at }
+        AppliedReversal: Live + Reversal { incoming_signed_at }
             [newer(incoming_signed_at)] / persist_clear(incoming_signed_at) => Reversed,
-        _ + Reversal { .. } => reject StaleRevision,
+        Live + Reversal { .. } => reject StaleRevision,
 
-        _ + ActiveRecovered { incoming_signed_at }
+        Live + ActiveRecovered { incoming_signed_at }
             [same_clock(incoming_signed_at)] => reject ConflictingRevision,
-        AppliedActiveRecovery: _ + ActiveRecovered { incoming_signed_at }
+        AppliedActiveRecovery: Effective + ActiveRecovered { incoming_signed_at }
             [newer(incoming_signed_at)] / persist_clear(incoming_signed_at) => _,
-        _ + ActiveRecovered { .. } => reject StaleRevision,
+        Live + ActiveRecovered { .. } => reject StaleRevision,
 
-        AuditedConsumption: _ + ConsumptionRequested { request_id }
-            / audit_consumption(request_id) => _,
+        ConsumptionUnchanged: Live + ConsumptionRequested => _,
     }
 }
 
@@ -181,11 +173,5 @@ impl RefundsContext for Rules {
             signed_at: *incoming_signed_at,
             refund: None,
         })
-    }
-
-    fn audit_consumption(&self, request_id: &u64) -> Effect {
-        Effect::AuditConsumption {
-            request_id: *request_id,
-        }
     }
 }

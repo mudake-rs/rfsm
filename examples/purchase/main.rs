@@ -1,34 +1,21 @@
-// The runnable path demonstrates one flow from the larger field-test model.
+// The runnable path demonstrates one flow through the composed domain model.
 #![allow(dead_code)]
 
-mod app;
 mod catalogue;
 mod diamond;
 mod miner;
+mod model;
 mod refund;
-mod store;
 mod verify;
-mod vip;
 
 use std::error::Error;
-use std::future::Future;
-use std::task::{Context, Poll, Waker};
 
-use app::{PurchaseState, PurchaseStore};
-use catalogue::{MINER_CURRENT, MINER_RETIRED};
+use catalogue::{DIAMONDS, MINER_CURRENT, MINER_RETIRED, VIP};
+use model::{Event, Purchase, Transition};
 use verify::{
     ChainId, Ownership, Timestamp, TransactionId, UntrustedRefundOutcome, UntrustedRefundRevision,
     UntrustedRenewalSnapshot, UntrustedTransaction,
 };
-
-fn run_ready<F: Future>(future: F) -> F::Output {
-    let mut future = std::pin::pin!(future);
-    let mut context = Context::from_waker(Waker::noop());
-    match future.as_mut().poll(&mut context) {
-        Poll::Ready(output) => output,
-        Poll::Pending => panic!("the in-memory sample unexpectedly suspended"),
-    }
-}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let transaction_id = TransactionId::new("transaction-1");
@@ -46,10 +33,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         quantity: None,
         ownership: Ownership::Purchased,
     };
-    let purchase = verify::verify_transaction(signed_purchase.clone())?;
+    let purchase_event = verify::verify_transaction(signed_purchase.clone())?;
 
-    let mut store = PurchaseStore::new(PurchaseState::default());
-    let purchased = run_ready(app::apply_transaction(&mut store, purchase, Timestamp(11)))?;
+    let mut purchase = Purchase::default();
+    let purchased = purchase.process(Event::Transaction(purchase_event))?;
 
     let renewal_snapshot = verify::verify_renewal(UntrustedRenewalSnapshot {
         signature_valid: true,
@@ -61,11 +48,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         billing_retry: true,
         grace_until: Some(Timestamp(35)),
     })?;
-    let renewal = run_ready(app::apply_renewal_snapshot(
-        &mut store,
-        renewal_snapshot,
-        Timestamp(20),
-    ))?;
+    let renewal = purchase.process(Event::RenewalSnapshot(renewal_snapshot))?;
 
     let refund = verify::verify_refund(UntrustedRefundRevision {
         signature_valid: true,
@@ -78,42 +61,134 @@ fn main() -> Result<(), Box<dyn Error>> {
             percentage_milliunits: 100_000,
         },
     })?;
-    let refunded = run_ready(app::apply_refund_notification(
-        &mut store,
-        refund,
-        Timestamp(21),
-        None,
-    ))?;
+    let refunded = purchase.process(Event::RefundNotification(refund))?;
 
-    let reversal = verify::verify_refund(UntrustedRefundRevision {
-        signature_valid: true,
-        bundle_id: verify::EXPECTED_BUNDLE.to_owned(),
-        environment: verify::EXPECTED_ENVIRONMENT.to_owned(),
-        transaction: signed_purchase,
-        signed_at: Timestamp(22),
-        outcome: UntrustedRefundOutcome::Reversed,
-    })?;
-    let restored = run_ready(app::apply_refund_notification(
-        &mut store,
-        reversal,
-        Timestamp(22),
-        None,
-    ))?;
+    let mut recovered_transaction = signed_purchase;
+    recovered_transaction.signed_at = Timestamp(22);
+    let recovered = verify::verify_recovered_active(recovered_transaction)?;
+    let restored = purchase.process(Event::RecoveredStatus(recovered))?;
 
-    let chain = store
-        .value()
-        .miners
-        .get(&chain_id)
-        .ok_or("the sample Miner chain was not persisted")?;
+    let chain = purchase
+        .miner(&chain_id)
+        .ok_or("the sample Miner chain was not persisted")?
+        .clone();
     assert_eq!(chain.state, miner::State::Bound);
+    assert!(chain.state.is_in(miner::StateId::Tracking));
     assert_eq!(
         miner::pending_product(chain.head.as_ref(), chain.renewal.as_ref()),
         Some(MINER_RETIRED)
     );
+    let exact = purchase
+        .transaction(&transaction_id)
+        .ok_or("the sample exact transaction was not retained")?;
+    assert!(exact.refund_state.is_in(refund::StateId::Effective));
+
+    let diamond_id = TransactionId::new("transaction-2");
+    let signed_diamonds = UntrustedTransaction {
+        signature_valid: true,
+        bundle_id: verify::EXPECTED_BUNDLE.to_owned(),
+        environment: verify::EXPECTED_ENVIRONMENT.to_owned(),
+        transaction_id: diamond_id.clone(),
+        chain_id: ChainId::new("transaction-2"),
+        product_id: DIAMONDS.as_str().to_owned(),
+        signed_at: Timestamp(30),
+        purchased_at: Timestamp(30),
+        expires_at: None,
+        quantity: Some(1),
+        ownership: Ownership::Purchased,
+    };
+    let refund_first = verify::verify_refund(UntrustedRefundRevision {
+        signature_valid: true,
+        bundle_id: verify::EXPECTED_BUNDLE.to_owned(),
+        environment: verify::EXPECTED_ENVIRONMENT.to_owned(),
+        transaction: signed_diamonds.clone(),
+        signed_at: Timestamp(31),
+        outcome: UntrustedRefundOutcome::Prorated {
+            revoked_at: Timestamp(31),
+            percentage_milliunits: 50_000,
+        },
+    })?;
+    purchase.process(Event::RefundNotification(refund_first))?;
+    let delivered = purchase.process(Event::Transaction(verify::verify_transaction(
+        signed_diamonds,
+    )?))?;
+    let delivery = delivered
+        .transitions
+        .iter()
+        .find_map(|transition| match transition {
+            Transition::Diamond(applied) => applied.effect,
+            _ => None,
+        })
+        .ok_or("Diamond delivery did not return its catalogue grant")?;
+    assert_eq!(delivery.grant, 2_000_000);
+    assert_eq!(
+        delivery.refund_percentage.map(|value| value.milliunits()),
+        Some(50_000)
+    );
+    assert_eq!(
+        purchase
+            .diamond(&diamond_id)
+            .ok_or("Diamond delivery state was not retained")?
+            .state,
+        diamond::State::Delivered
+    );
+
+    let floor = purchase.process(Event::VipFloorChanged {
+        expires_at: Some(Timestamp(100)),
+    })?;
+    assert_eq!(purchase.vip_expires_at(), Some(Timestamp(100)));
+
+    let signed_vip = UntrustedTransaction {
+        signature_valid: true,
+        bundle_id: verify::EXPECTED_BUNDLE.to_owned(),
+        environment: verify::EXPECTED_ENVIRONMENT.to_owned(),
+        transaction_id: TransactionId::new("transaction-3"),
+        chain_id: ChainId::new("transaction-3"),
+        product_id: VIP.as_str().to_owned(),
+        signed_at: Timestamp(40),
+        purchased_at: Timestamp(40),
+        expires_at: Some(Timestamp(120)),
+        quantity: None,
+        ownership: Ownership::Purchased,
+    };
+    let vip_purchase = purchase.process(Event::Transaction(verify::verify_transaction(
+        signed_vip.clone(),
+    )?))?;
+    assert_eq!(purchase.vip_expires_at(), Some(Timestamp(120)));
+    assert!(vip_purchase.transitions.iter().any(|transition| matches!(
+        transition,
+        Transition::VipProjectionChanged {
+            from: Some(Timestamp(100)),
+            to: Some(Timestamp(120))
+        }
+    )));
+
+    let vip_refund = verify::verify_refund(UntrustedRefundRevision {
+        signature_valid: true,
+        bundle_id: verify::EXPECTED_BUNDLE.to_owned(),
+        environment: verify::EXPECTED_ENVIRONMENT.to_owned(),
+        transaction: signed_vip,
+        signed_at: Timestamp(41),
+        outcome: UntrustedRefundOutcome::Full {
+            revoked_at: Timestamp(41),
+            percentage_milliunits: 100_000,
+        },
+    })?;
+    let vip_refunded = purchase.process(Event::RefundNotification(vip_refund))?;
+    assert_eq!(purchase.vip_expires_at(), Some(Timestamp(100)));
+
+    assert!(purchased.changed);
+    assert!(renewal.changed);
+    assert!(refunded.changed);
+    assert!(restored.changed);
+    assert!(floor.changed);
+    assert!(vip_refunded.changed);
 
     println!(
         "purchase={purchased:?} renewal={renewal:?} refund={refunded:?} reversal={restored:?}"
     );
-    println!("durable_version={} chain={chain:?}", store.version());
+    println!("refund-first delivery={delivered:?}");
+    println!("vip purchase={vip_purchase:?} refund={vip_refunded:?}");
+    println!("chain={chain:?}");
     Ok(())
 }

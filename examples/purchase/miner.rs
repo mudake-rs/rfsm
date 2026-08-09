@@ -52,7 +52,13 @@ machine! {
     context: Rules,
     effect: Effect,
 
-    states: { *Unbound, Bound, Refunded },
+    states: {
+        *Unbound,
+        Tracking {
+            *Bound,
+            Refunded,
+        },
+    },
     events: {
         Paid {
             incoming_transaction_id: TransactionId,
@@ -83,18 +89,16 @@ machine! {
             incoming_purchased_at,
             incoming_paid_until,
         ) => Bound,
-        Unbound + RenewalSnapshot { .. } => reject UnknownChain,
-        Unbound + RefundObserved { .. } => reject UnknownChain,
-        Unbound + ReversalObserved { .. } => reject UnknownChain,
+        Unbound + _ => reject UnknownChain,
 
-        DuplicatePaid: _ + Paid { incoming_transaction_id, .. }
+        DuplicatePaid: Tracking + Paid { incoming_transaction_id, .. }
             [is_head(incoming_transaction_id)] => _,
-        _ + Paid { incoming_transaction_id, incoming_purchased_at, .. }
+        Tracking + Paid { incoming_transaction_id, incoming_purchased_at, .. }
             [ambiguous_head(incoming_transaction_id, incoming_purchased_at)]
             => reject AmbiguousHead,
-        IgnoredHistoricalPaid: _ + Paid { incoming_purchased_at, .. }
+        IgnoredHistoricalPaid: Tracking + Paid { incoming_purchased_at, .. }
             [older_head(incoming_purchased_at)] => _,
-        AdvancedHead: _ + Paid {
+        AdvancedHead: Tracking + Paid {
             incoming_transaction_id,
             incoming_product_id,
             incoming_purchased_at,
@@ -107,11 +111,11 @@ machine! {
                 incoming_paid_until,
             ) => Bound,
 
-        IgnoredRetainedSnapshot: _ + RenewalSnapshot { incoming_transaction_id, .. }
+        IgnoredRetainedSnapshot: Tracking + RenewalSnapshot { incoming_transaction_id, .. }
             [retained_predecessor(incoming_transaction_id)] => _,
-        _ + RenewalSnapshot { incoming_transaction_id, .. }
+        Tracking + RenewalSnapshot { incoming_transaction_id, .. }
             [not_head(incoming_transaction_id)] => reject DetachedSnapshot,
-        DuplicateSnapshot: _ + RenewalSnapshot {
+        DuplicateSnapshot: Tracking + RenewalSnapshot {
             incoming_transaction_id,
             incoming_signed_at,
             incoming_auto_renew_product_id,
@@ -124,9 +128,9 @@ machine! {
             incoming_billing_retry,
             incoming_grace_until,
         )] => _,
-        _ + RenewalSnapshot { incoming_signed_at, .. }
+        Tracking + RenewalSnapshot { incoming_signed_at, .. }
             [same_snapshot_clock(incoming_signed_at)] => reject ConflictingSnapshot,
-        AppliedSnapshot: _ + RenewalSnapshot {
+        AppliedSnapshot: Tracking + RenewalSnapshot {
             incoming_transaction_id,
             incoming_signed_at,
             incoming_auto_renew_product_id,
@@ -140,16 +144,16 @@ machine! {
                 incoming_billing_retry,
                 incoming_grace_until,
             ) => _,
-        IgnoredStaleSnapshot: _ + RenewalSnapshot { .. } => _,
+        IgnoredStaleSnapshot: Tracking + RenewalSnapshot { .. } => _,
 
-        IgnoredSupersededRefund: _ + RefundObserved { incoming_transaction_id, .. }
+        IgnoredSupersededRefund: Tracking + RefundObserved { incoming_transaction_id, .. }
             [not_head(incoming_transaction_id)] => _,
         RefundedHead: Bound + RefundObserved { incoming_transaction_id }
             [is_head(incoming_transaction_id)] => Refunded,
         DuplicateHeadRefund: Refunded + RefundObserved { incoming_transaction_id, .. }
             [is_head(incoming_transaction_id)] => _,
 
-        IgnoredSupersededReversal: _ + ReversalObserved { incoming_transaction_id }
+        IgnoredSupersededReversal: Tracking + ReversalObserved { incoming_transaction_id }
             [not_head(incoming_transaction_id)] => _,
         RestoredHead: Refunded + ReversalObserved { incoming_transaction_id }
             [is_head(incoming_transaction_id)] => Bound,

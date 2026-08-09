@@ -222,6 +222,26 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
             #(#rejection_variants),*
         }
 
+        #[allow(missing_docs)]
+        impl State {
+            pub fn state_id(&self) -> StateId {
+                match self {
+                    #(#state_id_arms)*
+                }
+            }
+
+            pub fn is_in(&self, ancestor: StateId) -> bool {
+                let mut current = ::core::option::Option::Some(self.state_id());
+                while let ::core::option::Option::Some(state) = current {
+                    if state == ancestor {
+                        return true;
+                    }
+                    current = #name::__parent(state);
+                }
+                false
+            }
+        }
+
         #context_trait_item
 
         #[allow(missing_docs)]
@@ -239,18 +259,11 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
             }
 
             pub fn state_id(&self) -> StateId {
-                Self::__state_id(&self.state)
+                self.state.state_id()
             }
 
             pub fn is_in(&self, ancestor: StateId) -> bool {
-                let mut current = ::core::option::Option::Some(self.state_id());
-                while let ::core::option::Option::Some(state) = current {
-                    if state == ancestor {
-                        return true;
-                    }
-                    current = Self::__parent(state);
-                }
-                false
+                self.state.is_in(ancestor)
             }
 
             #[allow(irrefutable_let_patterns, unreachable_code)]
@@ -263,7 +276,7 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
                 ::rfsm::ProcessError<StateId, Event, Rejection>,
             > {
                 #use_context
-                let from_id = Self::__state_id(state);
+                let from_id = state.state_id();
                 let mut level = ::core::option::Option::Some(from_id);
                 while let ::core::option::Option::Some(at) = level {
                     match at {
@@ -296,12 +309,6 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
                     to,
                     effect,
                 })
-            }
-
-            fn __state_id(state: &State) -> StateId {
-                match state {
-                    #(#state_id_arms)*
-                }
             }
 
             fn __parent(state: StateId) -> ::core::option::Option<StateId> {

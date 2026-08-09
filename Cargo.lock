@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "rfsm"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rfsm-macros",
  "serde",
@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "rfsm-macros"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "proc-macro2",
  "quote",
