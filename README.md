@@ -103,6 +103,9 @@ than cloning a payload-bearing state.
 
 Targeting `Payment` recursively enters its `*Authorizing` initial leaf.
 `machine.is_in(StateId::Payment)` inspects ancestry.
+The stored state exposes the same query through
+`state.is_in(StateId::Payment)`, so persistence adapters do not need to
+reconstruct a machine to inspect a compound state.
 
 Leaf states and events may carry named payloads. Compound states are dataless
 tree nodes and cannot become active states.
@@ -150,7 +153,7 @@ Enable the optional `serde` feature and opt in per machine to derive
 
 ```toml
 [dependencies]
-rfsm = { version = "0.2.1", features = ["serde"] }
+rfsm = { version = "0.3.0", features = ["serde"] }
 serde_json = "1"
 ```
 
@@ -233,12 +236,22 @@ disposable machine with `from_state`, call `process`, and publish
 `Applied` value is already the transition result; return it only after a
 durable commit when the database is authoritative.
 
+Version 0.3 adds `state.state_id()` and `state.is_in(StateId::...)` for
+inspecting restored generated states without constructing a machine.
+If a generated `State` already has inherent `state_id` or `is_in` methods,
+rename or remove them; the macro now provides both methods.
+
 ## Samples
 
 - `cargo run --example door`
 - `cargo run --example nested_order`
 - `cargo test --example async_database`
+- `cargo run --example purchase`
 - `cargo test --workspace --all-targets`
+
+The purchase example models a complete Apple purchase domain as composed
+owner machines. Its refund and Miner tables use nested states while
+persistence and external effects remain application boundaries.
 
 The current scope excludes persistence adapters and schema migrations,
 entry/exit hooks, history, parallel regions, visualization, actor runtimes, and

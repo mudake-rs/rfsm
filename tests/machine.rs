@@ -165,6 +165,9 @@ mod nested {
         assert!(workflow.is_in(StateId::Flow));
         assert!(workflow.is_in(StateId::Waiting));
         assert!(!workflow.is_in(StateId::Idle));
+        assert!(workflow.state().is_in(StateId::Flow));
+        assert!(workflow.state().is_in(StateId::Waiting));
+        assert!(!workflow.state().is_in(StateId::Idle));
     }
 
     #[test]

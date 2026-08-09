@@ -72,6 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert_eq!(began.to, State::Authorizing);
     assert_eq!(orders.state(), &State::Authorizing);
     assert!(orders.is_in(StateId::Payment));
+    assert!(orders.state().is_in(StateId::Payment));
 
     let authorized = orders.process(Event::Authorize { charge_id })?;
     assert_eq!(authorized.effect, Some(Effect::RecordCharge(charge_id)));
