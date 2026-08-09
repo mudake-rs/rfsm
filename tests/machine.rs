@@ -43,11 +43,6 @@ mod flat {
             .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
         assert_eq!(closed.transition, Transition::ClosedAgain);
         assert_eq!(door.state(), &State::Closed);
-
-        let plan = Door::evaluate(&State::Closed, &Event::Open)
-            .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
-        assert_eq!(plan.transition, Transition::Opened);
-        assert_eq!(plan.to, State::Open);
     }
 
     #[test]
@@ -523,25 +518,32 @@ mod durable_state {
     }
 
     #[test]
-    fn evaluation_leaves_durable_state_unchanged_until_caller_confirmation() {
+    fn restored_machine_is_a_disposable_projection_of_durable_state() {
         let row_state = State::Pending;
-        let event = Event::Approve {
-            reference: "approval-42".to_owned(),
-        };
-
-        let plan = Approval::evaluate(&row_state, &event, &Facts)
+        let mut machine = Approval::from_state(row_state.clone(), Facts);
+        let applied = machine
+            .process(Event::Approve {
+                reference: "approval-42".to_owned(),
+            })
             .unwrap_or_else(|failure| panic!("unexpected failure: {failure}"));
 
         assert_eq!(row_state, State::Pending);
         assert_eq!(
-            plan.to,
+            machine.state(),
+            &State::Approved {
+                reference: "approval-42".to_owned()
+            }
+        );
+        assert_eq!(
+            applied.to,
             State::Approved {
                 reference: "approval-42".to_owned()
             }
         );
-        assert_eq!(plan.effect, Some(Effect::Audit("approval-42".to_owned())));
-
-        let applied = plan.confirm();
+        assert_eq!(
+            applied.effect,
+            Some(Effect::Audit("approval-42".to_owned()))
+        );
         assert_eq!(applied.transition, Transition::Approved);
     }
 }

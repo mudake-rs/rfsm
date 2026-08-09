@@ -31,11 +31,11 @@ use proc_macro::TokenStream;
 /// collected into a generated `Rejection` enum.
 ///
 /// A guard is written as `[guard(arguments)]`; an effect factory is written as
-/// `/ effect(arguments)`. Prefix either callback with `async` to generate async
-/// `evaluate` and `process` methods. Callbacks borrow context and payload
-/// bindings immutably, but interior or external side effects are not rolled
-/// back on rejection or async cancellation. Callbacks must be logically
-/// read-only and cancellation-safe.
+/// `/ effect(arguments)`. Prefix either callback with `async` to generate an
+/// async `process` method. Callbacks borrow context and payload bindings
+/// immutably, but interior or external side effects are not rolled back on
+/// rejection or async cancellation. Callbacks must be logically read-only and
+/// cancellation-safe.
 ///
 /// Rows are selected from the active leaf through its ancestors, then from
 /// wildcard `_` sources. Declaration order applies within one level. A failed

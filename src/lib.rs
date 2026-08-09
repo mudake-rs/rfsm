@@ -6,37 +6,11 @@ use core::fmt::{self, Debug, Display, Formatter};
 
 pub use rfsm_macros::machine;
 
-/// A selected transition that has not been confirmed by its state owner.
+/// A transition committed to a machine instance.
 ///
-/// In-memory generated machines confirm plans themselves. Database-backed
-/// callers inspect a plan, commit its state and effect in their transaction,
-/// and call [`Plan::confirm`] only after that transaction succeeds.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[must_use = "a plan must be committed by its state owner or discarded"]
-pub struct Plan<S, T, F> {
-    /// Stable identity of the selected transition.
-    pub transition: T,
-    /// Active leaf before the transition.
-    pub from: S,
-    /// Active leaf selected as the target.
-    pub to: S,
-    /// Caller-owned external work selected by the transition.
-    pub effect: Option<F>,
-}
-
-impl<S, T, F> Plan<S, T, F> {
-    /// Converts this plan into an applied transition after its owner commits.
-    pub fn confirm(self) -> Applied<S, T, F> {
-        Applied {
-            transition: self.transition,
-            from: self.from,
-            to: self.to,
-            effect: self.effect,
-        }
-    }
-}
-
-/// A transition confirmed by its in-memory or durable state owner.
+/// This value does not prove that caller-owned storage was updated. A
+/// database-backed application should publish it only after its transaction
+/// commits.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[must_use = "the applied transition contains observable business output"]
 pub struct Applied<S, T, F> {

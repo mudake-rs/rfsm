@@ -36,7 +36,7 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
     );
     let context_trait = format_ident!("{}Context", name);
     let asyncness = validated.is_async.then(|| quote!(async));
-    let await_evaluate = validated.is_async.then(|| quote!(.await));
+    let await_selection = validated.is_async.then(|| quote!(.await));
 
     let leaf_variants = flat_states
         .iter()
@@ -128,50 +128,50 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
         })
         .collect::<syn::Result<Vec<_>>>()?;
 
-    let (context_field, constructors, evaluate_context, process_context) = match &definition.context
-    {
-        Some(context) => (
-            quote!(context: #context,),
-            quote! {
-                pub fn new(context: #context) -> Self {
-                    Self {
-                        state: #initial_state,
-                        context,
+    let (context_field, constructors, selection_context, process_context) =
+        match &definition.context {
+            Some(context) => (
+                quote!(context: #context,),
+                quote! {
+                    pub fn new(context: #context) -> Self {
+                        Self {
+                            state: #initial_state,
+                            context,
+                        }
                     }
-                }
 
-                pub fn from_state(state: State, context: #context) -> Self {
-                    Self { state, context }
-                }
-
-                pub fn context(&self) -> &#context {
-                    &self.context
-                }
-
-                pub fn context_mut(&mut self) -> &mut #context {
-                    &mut self.context
-                }
-            },
-            quote!(, context: &#context),
-            quote!(, &self.context),
-        ),
-        None => (
-            quote!(),
-            quote! {
-                pub fn new() -> Self {
-                    Self {
-                        state: #initial_state,
+                    pub fn from_state(state: State, context: #context) -> Self {
+                        Self { state, context }
                     }
-                }
 
-                pub fn from_state(state: State) -> Self {
-                    Self { state }
-                }
-            },
-            quote!(),
-            quote!(),
-        ),
-    };
+                    pub fn context(&self) -> &#context {
+                        &self.context
+                    }
+
+                    pub fn context_mut(&mut self) -> &mut #context {
+                        &mut self.context
+                    }
+                },
+                quote!(, context: &#context),
+                quote!(, &self.context),
+            ),
+            None => (
+                quote!(),
+                quote! {
+                    pub fn new() -> Self {
+                        Self {
+                            state: #initial_state,
+                        }
+                    }
+
+                    pub fn from_state(state: State) -> Self {
+                        Self { state }
+                    }
+                },
+                quote!(),
+                quote!(),
+            ),
+        };
     let use_context = definition
         .context
         .is_some()
@@ -240,12 +240,12 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
             }
 
             #[allow(irrefutable_let_patterns, unreachable_code)]
-            pub #asyncness fn evaluate(
+            #asyncness fn __select(
                 state: &State,
                 event: &Event
-                #evaluate_context
+                #selection_context
             ) -> ::core::result::Result<
-                ::rfsm::Plan<State, Transition, #effect>,
+                (Transition, State, ::core::option::Option<#effect>),
                 ::rfsm::ProcessError<StateId, Event, Rejection>,
             > {
                 #use_context
@@ -273,9 +273,16 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
                 ::rfsm::Applied<State, Transition, #effect>,
                 ::rfsm::ProcessError<StateId, Event, Rejection>,
             > {
-                let plan = Self::evaluate(&self.state, &event #process_context)#await_evaluate?;
-                self.state = plan.to.clone();
-                ::core::result::Result::Ok(plan.confirm())
+                let (transition, to, effect) =
+                    Self::__select(&self.state, &event #process_context)#await_selection?;
+                let from = self.state.clone();
+                self.state = to.clone();
+                ::core::result::Result::Ok(::rfsm::Applied {
+                    transition,
+                    from,
+                    to,
+                    effect,
+                })
             }
 
             fn __state_id(state: &State) -> StateId {
@@ -415,12 +422,7 @@ fn selected_row_body(
             Ok(quote! {
                 let to = #target;
                 let effect: ::core::option::Option<#effect_ty> = #effect;
-                return ::core::result::Result::Ok(::rfsm::Plan {
-                    transition: Transition::#transition,
-                    from: state.clone(),
-                    to,
-                    effect,
-                });
+                return ::core::result::Result::Ok((Transition::#transition, to, effect));
             })
         }
     }

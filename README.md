@@ -60,7 +60,7 @@ mod order {
 ```
 
 Generated code currently refers to the runtime crate as `rfsm`, so keep that
-dependency name in `Cargo.toml` in the 0.1 series.
+dependency name in `Cargo.toml`.
 
 ## Nested states
 
@@ -129,8 +129,8 @@ read-only and cancellation-safe. They should compute typed effect data;
 external writes stay in application code. Rejection never changes machine
 state. The crate does not snapshot or roll back context or external resources.
 
-Prefix a callback with `async` in the table to generate async `evaluate` and
-`process` methods:
+Prefix a callback with `async` in the table to generate an async `process`
+method:
 
 ```rust,ignore
 Approved: Pending + Approve { reference } [async allowed(reference)]
@@ -145,24 +145,46 @@ boundary.
 
 ## Database-owned state
 
-`process` is the direct in-memory path. `evaluate` selects the same rule without
-mutating state, for an application-owned transaction:
+The database row and its concurrency version remain authoritative. Restore a
+disposable machine from a snapshot, process the event without holding a
+database lock, then conditionally publish the state and effect in one
+application-owned transaction:
 
 ```rust,ignore
-let plan = Approvals::evaluate(&row.state, &event, &facts).await?;
+let snapshot = db.load_approval(id).await?;
+let mut machine = Approvals::from_state(snapshot.state, facts);
+let applied = machine.process(event).await?;
 
 let mut tx = db.begin().await?;
-tx.store_state(&plan.to).await?;
-if let Some(effect) = &plan.effect {
+tx.store_state_if_version(id, snapshot.version, machine.state())
+    .await?;
+if let Some(effect) = &applied.effect {
     tx.apply_effect(effect).await?;
 }
 tx.commit().await?;
 
-let applied = plan.confirm();
+Ok(applied)
 ```
 
-The database row remains authoritative. `confirm` is the caller's assertion
-that its durable transaction succeeded.
+The conditional state write must report a conflict when no row matches the
+expected version. On conflict, failure, or cancellation before commit, discard
+the transaction and machine. Return `Applied` from the application only after
+the durable commit succeeds: it proves the local machine transition, not the
+database commit. If the connection is lost during `COMMIT`, read the database
+before retrying because the outcome may be unknown.
+
+Typed effects can share a transaction with database writes. HTTP calls, email,
+and other external systems are not made atomic by a database transaction and
+need an application-owned delivery protocol. Automatic retries are safe only
+when callbacks are read-only and retry-safe.
+
+## Migrating from 0.1
+
+Version 0.2 removes `Plan`, `Machine::evaluate`, and `Plan::confirm`. Restore a
+disposable machine with `from_state`, call `process`, and publish
+`machine.state()` plus `applied.effect` in the application transaction. The
+`Applied` value is already the transition result; return it only after a
+durable commit when the database is authoritative.
 
 ## Samples
 
