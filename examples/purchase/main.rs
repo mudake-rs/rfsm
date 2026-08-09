@@ -1,5 +1,5 @@
-// Alternate Apple paths are exercised by the example's specification tests.
-#![cfg_attr(not(test), allow(dead_code))]
+// The runnable path demonstrates one flow from the larger field-test model.
+#![allow(dead_code)]
 
 mod app;
 mod catalogue;

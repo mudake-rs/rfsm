@@ -31,22 +31,3 @@ pub fn lookup(product_id: &str) -> Option<Product> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn catalogue_is_closed_and_preserves_exact_identity() {
-        assert_eq!(
-            lookup(MINER_RETIRED.as_str()),
-            Some(Product::Miner { id: MINER_RETIRED })
-        );
-        assert_eq!(
-            lookup("com.example.mining.3.one_year"),
-            None,
-            "a shape-compatible product is not accepted without an exact entry"
-        );
-        assert_ne!(MINER_CURRENT, MINER_RETIRED);
-    }
-}

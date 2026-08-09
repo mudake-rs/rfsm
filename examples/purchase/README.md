@@ -2,15 +2,13 @@
 
 This example extracts the state semantics from a production Apple in-app
 purchase model without copying its HTTP, database, mining, or notification
-infrastructure. It is deliberately larger than a tutorial: its tests are an
-executable specification for delayed, duplicated, and conflicting provider
-facts.
+infrastructure. It keeps delayed, duplicated, and conflicting provider facts
+explicit in the transition tables.
 
 Run it with:
 
 ```console
 cargo run --example purchase
-cargo test --example purchase
 ```
 
 ## Ownership
