@@ -29,6 +29,8 @@ use proc_macro::TokenStream;
 /// `context` is required only for machines with callbacks. `effect` is
 /// required only when an effect factory is used. Rejection reasons are
 /// collected into a generated `Rejection` enum.
+/// Set `serde: true` with the `rfsm/serde` Cargo feature to derive serde's
+/// `Serialize` and `Deserialize` traits for the generated `State` enum.
 ///
 /// A guard is written as `[guard(arguments)]`; an effect factory is written as
 /// `/ effect(arguments)`. Prefix either callback with `async` to generate an

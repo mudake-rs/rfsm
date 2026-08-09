@@ -143,6 +143,53 @@ unchanged. Work already performed inside a callback is not rolled back when
 the future is dropped; externally visible writes belong in the returned effect
 boundary.
 
+## Serializing state
+
+Enable the optional `serde` feature and opt in per machine to derive
+`Serialize` and `Deserialize` for its generated `State` enum:
+
+```toml
+[dependencies]
+rfsm = { version = "0.2.1", features = ["serde"] }
+serde_json = "1"
+```
+
+```rust,ignore
+machine! {
+    name: Approvals,
+    serde: true,
+    states: { *Pending, Approved { reference: String } },
+    events: { Approve { reference: String } },
+    transitions: {
+        Approved: Pending + Approve { reference } => Approved { reference },
+        Approved { .. } + Approve { .. } => reject AlreadyApproved,
+    }
+}
+
+let encoded = serde_json::to_string(machine.state())?;
+let state: State = serde_json::from_str(&encoded)?;
+let restored = Approvals::from_state(state);
+```
+
+Only active leaf state is serialized. Compound ancestry is derived from the
+machine definition. `Machine`, context, events, transition results, and effects
+are not serialized by this option. A machine with payload-bearing states can
+opt in only when every state payload implements serde's traits.
+
+The `serde_json` representation shown above is externally tagged and uses
+generated variant and field names. Raw identifiers use their unraw spelling:
+`r#Type` and `r#ref` are stored as `Type` and `ref`. Unknown JSON variants and
+payload fields are rejected instead of being silently discarded. Other serde
+formats may use a different representation; some binary formats encode enum
+variants by declaration order. The application owns its serializer and stored
+format.
+
+Deserialization errors surface before `from_state`; constructing a machine from
+restored state does not process an event or produce an effect.
+
+Serde encodes state as bytes. It does not provide durable storage, schema
+versioning, migrations, concurrency control, transactions, or effect delivery.
+
 ## Database-owned state
 
 The database row and its concurrency version remain authoritative. Restore a
@@ -193,5 +240,6 @@ durable commit when the database is authoritative.
 - `cargo test --example async_database`
 - `cargo test --workspace --all-targets`
 
-The current scope excludes persistence formats, entry/exit hooks, history,
-parallel regions, visualization, actor runtimes, and executor abstractions.
+The current scope excludes persistence adapters and schema migrations,
+entry/exit hooks, history, parallel regions, visualization, actor runtimes, and
+executor abstractions.

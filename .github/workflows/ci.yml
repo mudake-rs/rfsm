@@ -25,7 +25,9 @@ jobs:
         run: cargo fmt --all --check
       - name: Check
         run: cargo check --locked --workspace --all-targets
-      - name: Test
+      - name: Test default features
+        run: cargo test --locked --workspace --all-targets
+      - name: Test all features
         run: cargo test --locked --workspace --all-targets --all-features
       - name: Doctests
         run: cargo test --locked --workspace --all-features --doc

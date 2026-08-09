@@ -6,6 +6,10 @@ use core::fmt::{self, Debug, Display, Formatter};
 
 pub use rfsm_macros::machine;
 
+#[doc(hidden)]
+#[cfg(feature = "serde")]
+pub use serde;
+
 /// A transition committed to a machine instance.
 ///
 /// This value does not prove that caller-owned storage was updated. A

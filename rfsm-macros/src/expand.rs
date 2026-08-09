@@ -11,6 +11,13 @@ use crate::model::{
 use crate::validate::{CallableDef, Validated, ident_key};
 
 pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<TokenStream> {
+    if definition.serde && !cfg!(feature = "serde") {
+        return Err(syn::Error::new(
+            definition.name.span(),
+            "`serde: true` requires the `serde` feature of the `rfsm` crate",
+        ));
+    }
+
     let flat_states = flatten_states(&definition.states);
     let state_by_name: HashMap<String, &FlatState<'_>> = flat_states
         .iter()
@@ -176,9 +183,16 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
         .context
         .is_some()
         .then(|| quote!(let _ = context;));
+    let serde_state = definition.serde.then(|| {
+        quote! {
+            #[derive(::rfsm::serde::Serialize, ::rfsm::serde::Deserialize)]
+            #[serde(crate = "::rfsm::serde", deny_unknown_fields)]
+        }
+    });
 
     Ok(quote! {
         #[allow(missing_docs)]
+        #serde_state
         #[derive(Clone, Debug, PartialEq)]
         pub enum State {
             #(#leaf_variants),*
@@ -275,8 +289,7 @@ pub fn expand(definition: &MachineDef, validated: &Validated) -> syn::Result<Tok
             > {
                 let (transition, to, effect) =
                     Self::__select(&self.state, &event #process_context)#await_selection?;
-                let from = self.state.clone();
-                self.state = to.clone();
+                let from = ::core::mem::replace(&mut self.state, to.clone());
                 ::core::result::Result::Ok(::rfsm::Applied {
                     transition,
                     from,
@@ -533,4 +546,37 @@ fn initial_expression(node: &StateNode) -> syn::Result<TokenStream> {
     }
     let name = &current.variant.name;
     Ok(quote!(State::#name))
+}
+
+#[cfg(all(test, not(feature = "serde")))]
+mod tests {
+    use syn::parse_str;
+
+    use super::*;
+    use crate::validate::validate;
+
+    #[test]
+    fn serde_opt_in_requires_the_cargo_feature() {
+        let definition = parse_str::<MachineDef>(
+            r#"
+                name: Stored,
+                serde: true,
+                states: { *Idle },
+                events: { Stay },
+                transitions: { Stayed: Idle + Stay => _ }
+            "#,
+        )
+        .unwrap_or_else(|failure| panic!("unexpected parse failure: {failure}"));
+        let validated = validate(&definition)
+            .unwrap_or_else(|failure| panic!("unexpected validation failure: {failure}"));
+
+        let failure = expand(&definition, &validated)
+            .err()
+            .unwrap_or_else(|| panic!("expected serde feature failure"));
+
+        assert_eq!(
+            failure.to_string(),
+            "`serde: true` requires the `serde` feature of the `rfsm` crate"
+        );
+    }
 }

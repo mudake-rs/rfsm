@@ -1,5 +1,5 @@
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, Token, Type, braced, bracketed, parenthesized};
+use syn::{Ident, LitBool, Token, Type, braced, bracketed, parenthesized};
 
 use crate::model::{
     BindingPattern, Callable, FieldDef, MachineDef, Row, RowEvent, RowOutcome, RowSource,
@@ -9,6 +9,7 @@ use crate::model::{
 impl Parse for MachineDef {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut name = None;
+        let mut serde = None;
         let mut context = None;
         let mut effect = None;
         let mut states = None;
@@ -21,6 +22,7 @@ impl Parse for MachineDef {
 
             match key.to_string().as_str() {
                 "name" => set_once(&mut name, input.parse()?, &key)?,
+                "serde" => set_once(&mut serde, input.parse::<LitBool>()?, &key)?,
                 "context" => set_once(&mut context, input.parse::<Type>()?, &key)?,
                 "effect" => set_once(&mut effect, input.parse::<Type>()?, &key)?,
                 "rejection" => {
@@ -48,7 +50,7 @@ impl Parse for MachineDef {
                     return Err(syn::Error::new(
                         key.span(),
                         format!(
-                            "unknown key `{other}`; expected name, context, effect, states, events, or transitions"
+                            "unknown key `{other}`; expected name, serde, context, effect, states, events, or transitions"
                         ),
                     ));
                 }
@@ -61,6 +63,7 @@ impl Parse for MachineDef {
 
         Ok(Self {
             name: name.ok_or_else(|| input.error("missing required key `name`"))?,
+            serde: serde.is_some_and(|value| value.value),
             context,
             effect,
             states: states.ok_or_else(|| input.error("missing required key `states`"))?,

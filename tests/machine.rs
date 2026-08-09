@@ -547,3 +547,152 @@ mod durable_state {
         assert_eq!(applied.transition, Transition::Approved);
     }
 }
+
+mod state_ownership {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use rfsm::machine;
+
+    #[derive(Debug, PartialEq)]
+    pub struct Payload {
+        clones: Rc<Cell<u32>>,
+    }
+
+    impl Clone for Payload {
+        fn clone(&self) -> Self {
+            self.clones.set(self.clones.get() + 1);
+            Self {
+                clones: Rc::clone(&self.clones),
+            }
+        }
+    }
+
+    machine! {
+        name: Ownership,
+        states: { *Idle, Loaded { payload: Payload }, Done },
+        events: { Finish },
+        transitions: {
+            Idle + Finish => reject NotLoaded,
+            Finished: Loaded { .. } + Finish => Done,
+            Done + Finish => reject AlreadyDone,
+        }
+    }
+
+    #[test]
+    fn accepted_transition_moves_the_previous_state_into_applied() {
+        let _initial = Ownership::new();
+        let clones = Rc::new(Cell::new(0));
+        let mut machine = Ownership::from_state(State::Loaded {
+            payload: Payload {
+                clones: Rc::clone(&clones),
+            },
+        });
+
+        let applied = machine
+            .process(Event::Finish)
+            .unwrap_or_else(|failure| panic!("unexpected process failure: {failure}"));
+
+        assert!(matches!(applied.from, State::Loaded { .. }));
+        assert_eq!(applied.to, State::Done);
+        assert_eq!(clones.get(), 0);
+    }
+}
+
+#[cfg(feature = "serde")]
+mod serialized_state {
+    use rfsm::machine;
+
+    machine! {
+        name: StoredWorkflow,
+        serde: true,
+        states: {
+            *Idle,
+            Flow {
+                *Waiting,
+                Approved { reference: String },
+            },
+            r#Type { r#ref: u8 },
+            Done,
+        },
+        events: {
+            Begin,
+            Approve { reference: String },
+            Finish,
+        },
+        transitions: {
+            Began: Idle + Begin => Flow,
+            Approved: Waiting + Approve { reference } => Approved { reference },
+            Finished: Approved { .. } + Finish => Done,
+            _ + _ => reject InvalidEvent,
+        }
+    }
+
+    #[test]
+    fn unit_and_payload_states_round_trip_and_resume_processing() {
+        let idle_json = serde_json::to_string(&State::Idle)
+            .unwrap_or_else(|failure| panic!("unexpected serialization failure: {failure}"));
+        assert_eq!(idle_json, r#""Idle""#);
+        let idle: State = serde_json::from_str(&idle_json)
+            .unwrap_or_else(|failure| panic!("unexpected deserialization failure: {failure}"));
+        assert_eq!(idle, State::Idle);
+
+        let persisted = State::Approved {
+            reference: "approval-42".to_owned(),
+        };
+        let json = serde_json::to_string(&persisted)
+            .unwrap_or_else(|failure| panic!("unexpected serialization failure: {failure}"));
+        let restored: State = serde_json::from_str(&json)
+            .unwrap_or_else(|failure| panic!("unexpected deserialization failure: {failure}"));
+        assert_eq!(restored, persisted);
+
+        let mut machine = StoredWorkflow::from_state(restored);
+        let applied = machine
+            .process(Event::Finish)
+            .unwrap_or_else(|failure| panic!("unexpected process failure: {failure}"));
+        assert_eq!(applied.from, persisted);
+        assert_eq!(applied.to, State::Done);
+        assert_eq!(machine.state(), &State::Done);
+    }
+
+    #[test]
+    fn nested_leaf_uses_the_flat_generated_state_format() {
+        let state = State::Approved {
+            reference: "approval-42".to_owned(),
+        };
+
+        let json = serde_json::to_string(&state)
+            .unwrap_or_else(|failure| panic!("unexpected serialization failure: {failure}"));
+
+        assert_eq!(json, r#"{"Approved":{"reference":"approval-42"}}"#);
+    }
+
+    #[test]
+    fn raw_identifiers_use_their_unraw_schema_names() {
+        let state = State::r#Type { r#ref: 7 };
+
+        let json = serde_json::to_string(&state)
+            .unwrap_or_else(|failure| panic!("unexpected serialization failure: {failure}"));
+        assert_eq!(json, r#"{"Type":{"ref":7}}"#);
+
+        let restored: State = serde_json::from_str(&json)
+            .unwrap_or_else(|failure| panic!("unexpected deserialization failure: {failure}"));
+        assert_eq!(restored, state);
+    }
+
+    #[test]
+    fn unknown_state_variant_is_rejected_before_machine_construction() {
+        let restored = serde_json::from_str::<State>(r#""Removed""#);
+
+        assert!(restored.is_err());
+    }
+
+    #[test]
+    fn unknown_payload_field_is_rejected_instead_of_silently_dropped() {
+        let restored = serde_json::from_str::<State>(
+            r#"{"Approved":{"reference":"approval-42","unexpected":true}}"#,
+        );
+
+        assert!(restored.is_err());
+    }
+}

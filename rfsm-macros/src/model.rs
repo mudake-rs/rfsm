@@ -93,6 +93,7 @@ pub struct Row {
 
 pub struct MachineDef {
     pub name: Ident,
+    pub serde: bool,
     pub context: Option<Type>,
     pub effect: Option<Type>,
     pub states: Vec<StateNode>,
