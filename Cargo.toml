@@ -13,6 +13,7 @@ repository = "https://github.com/mudake-rs/rfsm"
 include = [
     "/src/**/*.rs",
     "/examples/**/*.rs",
+    "/examples/**/*.md",
     "/tests/**/*.rs",
     "/Cargo.toml",
     "/README.md",

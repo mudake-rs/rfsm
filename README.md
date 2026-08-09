@@ -238,6 +238,8 @@ durable commit when the database is authoritative.
 - `cargo run --example door`
 - `cargo run --example nested_order`
 - `cargo test --example async_database`
+- `cargo run --example purchase`
+- `cargo test --example purchase`
 - `cargo test --workspace --all-targets`
 
 The current scope excludes persistence adapters and schema migrations,
